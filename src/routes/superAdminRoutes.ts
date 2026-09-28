@@ -6,11 +6,16 @@ import {
     suspendOrganisation,
     getOrganisationStats,
     resetUserPassword,
-    broadcastToOrgAdmins,
     getHelperActivityLogs,
     getHelperActivityLogUsers,
     getUserPasswords
 } from '../controllers/superAdminController';
+import {
+    sendBroadcast,
+    getAllBroadcasts,
+    getBroadcastStats,
+    broadcastToOrgAdmins
+} from '../controllers/broadcastController';
 import { deleteOrganisation, restoreOrganisation, permanentlyDeleteOrganisation } from '../controllers/organisationController';
 import {
     getPlans,
@@ -87,8 +92,14 @@ router.delete('/training-videos/:id', protect, deleteTrainingVideo);
 router.get('/users/passwords', protect, getUserPasswords);
 router.post('/users/reset-password', protect, resetUserPassword);
 
-// Broadcast Notification to all Org Admins
+// Broadcast Notification to all Org Admins - legacy route, kept for the
+// scripts/broadcast.ts/.sh CLI and any other existing caller.
 router.post('/broadcast-notification', protect, broadcastToOrgAdmins);
+
+// Broadcasts - the Super Admin panel's composer + history/acknowledgement UI
+router.post('/broadcasts', protect, sendBroadcast);
+router.get('/broadcasts', protect, getAllBroadcasts);
+router.get('/broadcasts/:id/stats', protect, getBroadcastStats);
 
 // Helper (PypeCRM Helper / Dad-call-recorder) activity log monitoring
 router.get('/helper-logs', protect, getHelperActivityLogs);

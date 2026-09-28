@@ -178,6 +178,19 @@ router.get('/callback', async (req, res) => {
         const expiresIn = longLivedTokenResponse.data.expires_in;
         const tokenExpiresAt = expiresIn ? new Date(Date.now() + (expiresIn * 1000)).toISOString() : null;
 
+        // The Facebook user id of whoever just connected - stored on each account
+        // below so the deauthorize webhook (Meta calls this when a user removes
+        // the app from their own Facebook settings) can find which of our
+        // metaAccounts entries to flag, instead of having no way to match the
+        // deauthorize event back to an org at all.
+        let fbUserId: string | null = null;
+        try {
+            const meResponse = await axios.get(`${META_GRAPH_URL}/me`, { params: { access_token: longLivedToken, fields: 'id' } });
+            fbUserId = meResponse.data?.id || null;
+        } catch (meError: any) {
+            console.log('[Meta OAuth] Could not fetch /me id (non-fatal):', meError.response?.data || meError.message);
+        }
+
         // Get the Business(es) the user actually granted in Facebook's own asset
         // picker during login — this list IS already scoped to what they selected
         // (unlike /me/adaccounts below, which is not scoped by that picker).
@@ -473,6 +486,7 @@ router.get('/callback', async (req, res) => {
                 pageId: page.id,
                 pageName: page.name,
                 appId: appId,
+                fbUserId,
                 connectedAt: new Date().toISOString()
             }));
 
@@ -495,6 +509,7 @@ router.get('/callback', async (req, res) => {
                 adAccountName: unambiguousAdAccount?.name || null,
                 needsAdAccountSelection,
                 appId: appId,
+                fbUserId,
                 connectedAt: new Date().toISOString()
             };
 

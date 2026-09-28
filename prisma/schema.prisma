@@ -210,6 +210,7 @@ model User {
   issueReplies                   IssueReply[]             @relation("IssueReplyAuthor")
   helperActivityLogs             HelperActivityLog[]
   reviewedEnquiries              Enquiry[]
+  sentBroadcasts                 Broadcast[]              @relation("BroadcastSender")
 
   @@index([organisationId])
   @@index([email])
@@ -241,24 +242,54 @@ model Team {
 }
 
 model Notification {
-  id              String   @id @default(uuid())
+  id              String     @id @default(uuid())
   title           String
   message         String
-  type            String   @default("info")
+  type            String     @default("info")
+  // Only meaningful for `type: "popup"` broadcasts (see PersistentBroadcastModal
+  // on the frontend) - drives which icon/accent color the popup shows.
+  // "info" | "warning" | "critical" | "update". Regular per-event notifications
+  // (lead assigned, re-enquiry, etc.) leave this at the default and it's unused.
+  severity        String     @default("info")
   relatedResource String?
   relatedId       String?
-  isRead          Boolean  @default(false)
+  isRead          Boolean    @default(false)
   recipientId     String
   organisationId  String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  recipient       User     @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  // Set only for rows created by a platform-wide/admin broadcast (see
+  // Broadcast model below) - lets the Super Admin panel compute per-org
+  // acknowledgement counts for a given broadcast. Null for every other
+  // (per-event) notification, which is the vast majority of rows.
+  broadcastId     String?
+  broadcast       Broadcast? @relation(fields: [broadcastId], references: [id])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  recipient       User       @relation("NotificationRecipient", fields: [recipientId], references: [id])
 
   @@index([recipientId])
   @@index([recipientId, isRead])
   @@index([recipientId, createdAt])
   @@index([recipientId, isRead, createdAt])
   @@index([recipientId, isRead, organisationId])
+  @@index([broadcastId])
+}
+
+// One row per broadcast sent from the Super Admin panel (or the
+// scripts/broadcast.ts/.sh CLI, which hits the same endpoint) - the parent
+// record that all of that broadcast's per-recipient Notification rows link
+// back to via `Notification.broadcastId`, so the panel can show "X of Y
+// users acknowledged, broken down by organisation."
+model Broadcast {
+  id             String         @id @default(uuid())
+  title          String
+  message        String
+  severity       String         @default("info")
+  audience       String // 'all' | 'admins' | 'self'
+  recipientCount Int            @default(0)
+  createdById    String?
+  createdBy      User?          @relation("BroadcastSender", fields: [createdById], references: [id])
+  createdAt      DateTime       @default(now())
+  notifications  Notification[]
 }
 
 // One row per login — backs the mobile app's Settings > Devices screen

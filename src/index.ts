@@ -236,6 +236,7 @@ app.use(cors({
 app.use([
     '/api/meta/callback',
     '/api/meta/webhook',
+    '/api/public/meta/webhook',
     '/api/whatsapp/webhook',
     '/api/whatsapp/webhook/gallabox'
 ], (req, res, next) => {

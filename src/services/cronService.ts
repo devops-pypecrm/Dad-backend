@@ -307,16 +307,18 @@ export const initCronJobs = () => {
         }
     });
 
-    // Run every day at 04:00 AM (Meta Marketing API ping for App Review compliance)
-    // cron.schedule('0 4 * * *', async () => {
-    //     try {
-    //         console.log('[Cron] Initiating daily Meta Marketing API ping...');
-    //         const { MetaPollingService } = await import('./metaPollingService');
-    //         await MetaPollingService.pingMetaMarketingAPI();
-    //     } catch (error) {
-    //         console.error('[Cron] Error during Meta Marketing API ping:', error);
-    //     }
-    // });
+    // Run every day at 04:00 AM (Meta Marketing API ping for App Review compliance -
+    // a lightweight, read-only Insights API call per connected ad account, satisfying
+    // Meta's own "continuous API usage" requirement for retained Marketing API access)
+    cron.schedule('0 4 * * *', async () => {
+        try {
+            console.log('[Cron] Initiating daily Meta Marketing API ping...');
+            const { MetaPollingService } = await import('./metaPollingService');
+            await MetaPollingService.pingMetaMarketingAPI();
+        } catch (error) {
+            console.error('[Cron] Error during Meta Marketing API ping:', error);
+        }
+    });
 
 
     // Run every day at 03:00 AM (Meta Token Expiry Check)

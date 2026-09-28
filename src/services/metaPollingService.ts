@@ -189,6 +189,10 @@ export const MetaPollingService = {
      * Sends a warning email if polling fails
      */
     async sendAlertEmail(errorMsg: string, orgName: string, orgId: string) {
+        // Was hardcoded to a personal Gmail address - now reads from an env
+        // var (with the same fallback preserved so nothing breaks if it's
+        // never set), so this doesn't depend on one person's inbox.
+        const alertRecipient = process.env.META_POLLING_ALERT_EMAIL || 'hostixpro@gmail.com';
         try {
             const { EmailService } = await import('./emailService');
             const subject = `⚠️ ALERT: Meta Lead Polling Failure - ${orgName}`;
@@ -206,8 +210,8 @@ export const MetaPollingService = {
                 </div>
             `;
 
-            await EmailService.sendEmail('hostixpro@gmail.com', subject, html);
-            logger.info(`Sent polling alert email to hostixpro@gmail.com for ${orgName}`, 'MetaPolling');
+            await EmailService.sendEmail(alertRecipient, subject, html);
+            logger.info(`Sent polling alert email to ${alertRecipient} for ${orgName}`, 'MetaPolling');
         } catch (e) {
             logger.error('Failed to send Meta alert email:', e, 'MetaPolling');
         }

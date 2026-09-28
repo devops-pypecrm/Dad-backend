@@ -1,8 +1,10 @@
+import crypto from 'crypto';
 import prisma from '../config/prisma';
 import { metaService } from './metaService';
 import { logger } from '../utils/logger';
 import { DistributionService } from './distributionService';
 import { decrypt } from '../utils/encryption';
+import { getConnectedMetaAccounts } from '../utils/metaAccountResolver';
 
 export const MetaIntegrationService = {
     /**
@@ -89,17 +91,14 @@ export const MetaIntegrationService = {
         try {
             logger.info(`Syncing campaigns for organization ${organisationId}`, 'MetaIntegration', undefined, organisationId);
 
-            const org = await prisma.organisation.findUnique({
-                where: { id: organisationId },
-                select: { integrations: true }
-            });
-
-            if (!org) {
-                throw new Error('Organization not found');
-            }
-
-            const integrations = org.integrations as any;
-            const metaConfig = integrations?.meta;
+            // Was reading only the legacy single integrations.meta slot - for an
+            // org with more than one connected Page/ad account, that could be
+            // any one of them (whichever reconnected most recently), not
+            // necessarily the one actually being synced. getConnectedMetaAccounts
+            // merges metaAccounts[] with the legacy slot, so this still works
+            // unchanged for an org that never touched the multi-account feature.
+            const accounts = await getConnectedMetaAccounts(organisationId);
+            const metaConfig = accounts.find((a) => a.adAccountId) || accounts[0];
 
             if (!metaConfig?.accessToken || !metaConfig?.adAccountId) {
                 throw new Error('Meta integration not configured');
@@ -296,6 +295,99 @@ export const MetaIntegrationService = {
         } else {
             logger.warn('[MetaWebhook] Verification FAILED - Missing parameters', 'MetaWebhook');
             res.sendStatus(400);
+        }
+    },
+
+    /**
+     * Meta's deauthorize_callback_url - called when a Facebook user removes
+     * this app from their own Facebook Settings. Payload is a `signed_request`
+     * form field (base64url signature + base64url JSON payload, HMAC-SHA256
+     * signed with the app secret) containing that user's Facebook `user_id`.
+     *
+     * We only ever stored a CRM userId + Page/ad-account tokens per connection
+     * before this fix - never the connecting Facebook user's own id - so a
+     * deauthorize event for a connection made before this change has nothing
+     * to match against and is just logged. Every connection made after this
+     * fix stores `fbUserId` on its metaAccounts[] entry, so those can be
+     * found and flagged automatically going forward.
+     */
+    verifyAndParseSignedRequest(signedRequest: string): { user_id?: string } | null {
+        const appSecret = process.env.META_APP_SECRET;
+        if (!appSecret || !signedRequest || !signedRequest.includes('.')) return null;
+
+        const [encodedSig, encodedPayload] = signedRequest.split('.');
+        const base64UrlDecode = (str: string) => Buffer.from(str.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+
+        const expectedSig = crypto
+            .createHmac('sha256', appSecret)
+            .update(encodedPayload)
+            .digest('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        if (expectedSig !== encodedSig) {
+            logger.warn('[MetaDeauthorize] Invalid signed_request signature', 'MetaDeauthorize');
+            return null;
+        }
+
+        try {
+            return JSON.parse(base64UrlDecode(encodedPayload).toString('utf8'));
+        } catch {
+            return null;
+        }
+    },
+
+    async handleDeauthorize(fbUserId: string): Promise<void> {
+        try {
+            const orgs = await prisma.organisation.findMany({
+                where: { integrations: { not: null as any } },
+                select: { id: true, name: true, integrations: true }
+            });
+
+            for (const org of orgs) {
+                const integrations = org.integrations as any;
+                const metaAccounts: any[] = Array.isArray(integrations?.metaAccounts) ? integrations.metaAccounts : [];
+                const legacyMatches = integrations?.meta?.fbUserId === fbUserId;
+                const matchedAccounts = metaAccounts.filter((acc) => acc.fbUserId === fbUserId);
+
+                if (matchedAccounts.length === 0 && !legacyMatches) continue;
+
+                const now = new Date().toISOString();
+                const updatedMetaAccounts = metaAccounts.map((acc) =>
+                    acc.fbUserId === fbUserId ? { ...acc, connected: false, needsReconnect: true, deauthorizedAt: now } : acc
+                );
+                const updatedLegacy = legacyMatches
+                    ? { ...integrations.meta, connected: false, needsReconnect: true, deauthorizedAt: now }
+                    : integrations.meta;
+
+                await prisma.organisation.update({
+                    where: { id: org.id },
+                    data: { integrations: { ...integrations, metaAccounts: updatedMetaAccounts, meta: updatedLegacy } }
+                });
+
+                logger.warn(`[MetaDeauthorize] Org "${org.name}" (${org.id}) - Facebook user ${fbUserId} revoked access, flagged for reconnect`, 'MetaDeauthorize');
+
+                try {
+                    const { NotificationService } = await import('./notificationService');
+                    const admins = await prisma.user.findMany({
+                        where: { organisationId: org.id, role: { in: ['admin', 'org_admin', 'organisation_admin'] }, isActive: true, isDeleted: false },
+                        select: { id: true }
+                    });
+                    for (const admin of admins) {
+                        await NotificationService.send(
+                            admin.id,
+                            'Meta connection removed',
+                            'Someone removed PypeCRM\'s access from Facebook settings. Reconnect in Settings → Integrations to keep receiving leads and managing ads.',
+                            'warning'
+                        );
+                    }
+                } catch (notifyError) {
+                    logger.error('[MetaDeauthorize] Failed to notify org admins', notifyError, 'MetaDeauthorize');
+                }
+            }
+        } catch (error) {
+            logger.error('[MetaDeauthorize] Failed to process deauthorize event', error, 'MetaDeauthorize');
         }
     }
 };

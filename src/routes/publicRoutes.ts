@@ -1,5 +1,6 @@
 
 import express from 'express';
+import crypto from 'crypto';
 import { submitWebForm } from '../controllers/webFormController';
 import { MetaIntegrationService } from '../services/metaIntegrationService';
 import { getPublicFAQs } from '../controllers/siteFAQController';
@@ -38,9 +39,49 @@ router.get('/meta/webhook', (req, res) => MetaIntegrationService.verifyWebhook(r
 /**
  * @route POST /api/public/meta/webhook
  * @desc Handle Meta Webhook (Facebook Leads etc)
+ *
+ * Verifies X-Hub-Signature-256 the same way `/api/meta/webhook` in
+ * metaAuthRoutes.ts already does, so this sibling endpoint (documented as a
+ * fallback callback URL in the health-check response) can't be hit with
+ * forged lead data by anyone who finds the URL. Same lenient behavior too -
+ * only rejects when META_WEBHOOK_SECRET is actually configured AND the
+ * signature doesn't match, so this can't start rejecting real traffic on an
+ * org whose deployment never set that env var.
  */
 router.post('/meta/webhook', (req, res) => {
+    const signature = req.headers['x-hub-signature-256'] as string | undefined;
+    const secret = process.env.META_WEBHOOK_SECRET;
+
+    if (secret && signature) {
+        const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+        const digest = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+        const expectedSignature = `sha256=${digest}`;
+        if (signature !== expectedSignature) {
+            console.warn('❌ [PublicMetaWebhook] Invalid signature');
+            return res.sendStatus(401);
+        }
+    }
+
     MetaIntegrationService.handleWebhook(req.body);
+    res.sendStatus(200);
+});
+
+/**
+ * @route POST /api/public/meta/deauthorize
+ * @desc Meta's deauthorize_callback_url - called when a user removes this
+ * app from their Facebook settings. Configure this exact URL in the Meta
+ * App Dashboard under Facebook Login > Settings > "Deauthorize Callback URL".
+ * See MetaIntegrationService.handleDeauthorize for what happens with it.
+ */
+router.post('/meta/deauthorize', express.urlencoded({ extended: true }), async (req, res) => {
+    const signedRequest = req.body?.signed_request;
+    const parsed = signedRequest ? MetaIntegrationService.verifyAndParseSignedRequest(signedRequest) : null;
+
+    if (!parsed?.user_id) {
+        return res.sendStatus(400);
+    }
+
+    await MetaIntegrationService.handleDeauthorize(parsed.user_id);
     res.sendStatus(200);
 });
 

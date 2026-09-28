@@ -381,9 +381,16 @@ export const MetaLeadService = {
 
             // 2. Map Field Data
             const fieldMap: Record<string, string> = {};
+            // Preserves every question's original (not lowercased) label
+            // alongside its answer - used below to keep whatever the
+            // best-guess matching doesn't recognize, instead of silently
+            // dropping it. There's no per-form manual mapping UI yet; this is
+            // the safety net until one exists.
+            const rawFormFields: { label: string; value: string }[] = [];
             metaLeadData.field_data.forEach((field: any) => {
                 if (field.values && field.values.length > 0) {
                     fieldMap[field.name.toLowerCase()] = field.values[0];
+                    rawFormFields.push({ label: field.name, value: field.values[0] });
                 }
             });
 
@@ -394,14 +401,29 @@ export const MetaLeadService = {
                 return '';
             };
 
+            const NAME_KEYS = ['full name', 'full_name', 'name', 'first_name', 'first name'];
+            const PHONE_KEYS = ['phone', 'phone number', 'phone_number', 'mobile', 'mobile number'];
+            const EMAIL_KEYS = ['email', 'email address', 'email_address'];
+            const CITY_KEYS = ['city', 'location'];
+            const COMPANY_KEYS = ['company', 'organization', 'company name'];
+            const RECOGNIZED_KEYS = new Set([...NAME_KEYS, ...PHONE_KEYS, ...EMAIL_KEYS, ...CITY_KEYS, ...COMPANY_KEYS]);
+
             const leadData = {
-                full_name: getField(['full name', 'full_name', 'name', 'first_name', 'first name']),
-                phone: getField(['phone', 'phone number', 'phone_number', 'mobile', 'mobile number']),
-                email: getField(['email', 'email address', 'email_address']),
-                city: getField(['city', 'location']),
-                company: getField(['company', 'organization', 'company name']),
+                full_name: getField(NAME_KEYS),
+                phone: getField(PHONE_KEYS),
+                email: getField(EMAIL_KEYS),
+                city: getField(CITY_KEYS),
+                company: getField(COMPANY_KEYS),
                 campaign_name: metaLeadData.campaign_name || metaLeadData.ad_name || metaLeadData.form_name || `Form: ${metaLeadData.form_id || formId}` || 'Meta Lead'
             };
+
+            // Any question on the form whose label didn't match one of the
+            // recognized synonyms above (e.g. "Preferred course", "Budget
+            // range") - kept verbatim in enquiryAbout and sourceDetails.
+            // formFields rather than lost, since there's nowhere else on the
+            // Lead record a rep would see it otherwise.
+            const unrecognizedFields = rawFormFields.filter((f) => !RECOGNIZED_KEYS.has(f.label.toLowerCase()));
+            const unrecognizedSummary = unrecognizedFields.map((f) => `${f.label}: ${f.value}`).join('; ');
 
             const targetBranchId = await DistributionService.resolveBranchForMetaPage(orgId, pageId);
 
@@ -410,6 +432,12 @@ export const MetaLeadService = {
                 lastName: '',
                 phone: leadData.phone || '',
                 email: leadData.email || undefined,
+                // city/company were already being extracted above but never
+                // actually attached to the lead - fixed alongside the
+                // unrecognized-field capture below since both were the same
+                // class of "answered but silently lost" bug.
+                company: leadData.company || undefined,
+                enquiryAbout: [leadData.city, unrecognizedSummary].filter(Boolean).join(' | ') || undefined,
                 organisationId: orgId,
                 source: LeadSource.meta_leadgen,
                 sourceDetails: {
@@ -420,7 +448,12 @@ export const MetaLeadService = {
                     adName: metaLeadData.ad_name,
                     campaignId: metaLeadData.campaign_id,
                     campaignName: leadData.campaign_name,
-                    metaCreatedTime: metaLeadData.created_time
+                    metaCreatedTime: metaLeadData.created_time,
+                    // Every question this form actually asked, verbatim - the
+                    // full record a future per-form field-mapping UI would
+                    // read from, and a fallback a rep can still find in the
+                    // raw data even before that UI exists.
+                    formFields: rawFormFields
                 }
             };
 
