@@ -96,6 +96,19 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           details: { count: leadIds.length, assignedToId: data.assignedToId }
         });
 
+        // Notify the new owner - this endpoint previously updated ownership
+        // silently. leadController.ts's bulkAssignLeads (a separate, older
+        // bulk-assign path) already does this; this one never did.
+        if (data.assignedToId !== userId) {
+          const { NotificationService } = await import('../services/notificationService');
+          NotificationService.send(
+            data.assignedToId,
+            'Bulk Leads Assigned',
+            `${result.count} leads have been assigned to you by ${user.firstName}.`,
+            'info'
+          ).catch((err: unknown) => logger.error('Failed to notify bulk-assign recipient', err, 'BULK_LEADS', userId, organisationId));
+        }
+
         message = `${result.count} leads assigned successfully`;
         break;
       }
