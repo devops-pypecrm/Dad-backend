@@ -75,11 +75,20 @@ export const getCampaigns = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// Powers the Leads list's campaign filter (shown once the Source filter is set
-// to Meta Ads). Lead has no campaign FK - only `sourceDetails` Json (see
-// analyticsController.ts's getLeadCampaigns, which does the same distinct-
-// name scan) - so this just lists every campaign that has actually produced
-// a lead for this org, straight from that data.
+// Powers the Leads list's campaign filter. Lead has no campaign FK - only
+// `sourceDetails` Json (see analyticsController.ts's getLeadCampaigns, which
+// does the same distinct-name scan) - so this just lists every campaign
+// that has actually produced a lead for this org, straight from that data.
+//
+// Originally Meta-only (`source: 'meta_leadgen'`), but bulk-imported leads
+// (e.g. a center importing an "Albania" or "Virginia" study-abroad campaign
+// sheet) are tagged with sourceDetails.campaignName too, with no campaignId
+// since there's no live ad account behind them - so this now scans every
+// source, keyed on campaignId when present and falling back to campaignName
+// itself as the key otherwise (two imported batches under the same campaign
+// name correctly collapse into one filter entry; two different Meta
+// campaigns that happen to share a display name do not collide, since
+// they're still keyed on their distinct campaignId).
 //
 // Deliberately does NOT cross-reference Meta's live API for "is this
 // campaign currently ACTIVE": that was tried before and caused this filter
@@ -98,25 +107,26 @@ export const getActiveLeadCampaigns = async (req: AuthRequest, res: Response) =>
             where: {
                 organisationId: orgId,
                 isDeleted: false,
-                source: 'meta_leadgen' as any,
                 sourceDetails: { not: null as any }
             },
             select: { sourceDetails: true },
-            take: 2000,
+            take: 5000,
             orderBy: { createdAt: 'desc' }
         });
 
-        const seenByCampaignId = new Map<string, string>();
+        const seenByKey = new Map<string, string>();
         leads.forEach(l => {
             const details = l.sourceDetails as any;
-            const campaignId = details?.campaignId;
-            if (typeof campaignId === 'string' && campaignId.trim()) {
-                seenByCampaignId.set(campaignId, details?.campaignName || campaignId);
+            const campaignId = typeof details?.campaignId === 'string' ? details.campaignId.trim() : '';
+            const campaignName = typeof details?.campaignName === 'string' ? details.campaignName.trim() : '';
+            const key = campaignId || campaignName;
+            if (key) {
+                seenByKey.set(key, campaignName || key);
             }
         });
 
         res.json(
-            Array.from(seenByCampaignId.entries())
+            Array.from(seenByKey.entries())
                 .map(([id, name]) => ({ id, name }))
                 .sort((a, b) => a.name.localeCompare(b.name))
         );

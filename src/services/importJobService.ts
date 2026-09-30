@@ -10,6 +10,11 @@ export class ImportJobService {
         pipelineId?: string;
         defaultStage?: string;
         branchId?: string;
+        // Applied to every row that doesn't already carry its own Campaign
+        // column value - lets a center importing a whole file for one
+        // campaign (e.g. "Albania" study-abroad leads) tag the entire batch
+        // in one field instead of repeating it down a spreadsheet column.
+        defaultCampaignName?: string;
         applyAssignmentRules?: boolean;
         splitUserIds?: string[];
         duplicateAction?: 'flag_as_reenquiry' | 'skip';
@@ -26,6 +31,7 @@ export class ImportJobService {
                     pipelineId: options.pipelineId,
                     defaultStage: options.defaultStage,
                     branchId: options.branchId,
+                    defaultCampaignName: options.defaultCampaignName,
                     applyAssignmentRules: options.applyAssignmentRules || false,
                     splitUserIds: options.splitUserIds || [],
                     duplicateAction: options.duplicateAction || 'flag_as_reenquiry'
@@ -111,6 +117,7 @@ export class ImportJobService {
             const pipelineId = metadata.pipelineId || null;
             const defaultStage = metadata.defaultStage || null;
             const branchId = metadata.branchId || null;
+            const defaultCampaignName = metadata.defaultCampaignName || null;
             const applyAssignmentRules = metadata.applyAssignmentRules || false;
             const splitUserIds = metadata.splitUserIds || [];
             // 'flag_as_reenquiry' = existing behavior (log re-enquiry activity)
@@ -201,6 +208,13 @@ export class ImportJobService {
                             if (!leadData.customFields) leadData.customFields = {};
                             leadData.customFields[crmField] = value;
                         }
+                    }
+
+                    // Batch-level campaign default - only fills in when the row's own
+                    // Campaign column (mapped above) didn't already set one, so a
+                    // per-row value always wins over the whole-file default.
+                    if (defaultCampaignName && !leadData.sourceDetails?.campaignName) {
+                        leadData.sourceDetails = { ...(leadData.sourceDetails || {}), campaignName: defaultCampaignName };
                     }
 
                     // Robust Status and Stage Resolution

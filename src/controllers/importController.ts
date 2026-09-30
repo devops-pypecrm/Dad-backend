@@ -18,6 +18,7 @@ export const importLeads = async (req: Request, res: Response) => {
         const user = (req as any).user;
         const orgId = getOrgId(user);
         const branchId = req.body.branchId || user.branchId || null;
+        const defaultCampaignName = req.body.campaignName || null;
         const applyAssignmentRules = req.body.applyAssignmentRules === 'true';
         const splitUserIds = req.body.splitUserIds ? (typeof req.body.splitUserIds === 'string' ? JSON.parse(req.body.splitUserIds) : req.body.splitUserIds) : [];
         const duplicateAction = req.body.duplicateAction || 'flag_as_reenquiry'; // 'flag_as_reenquiry' | 'skip'
@@ -31,6 +32,7 @@ export const importLeads = async (req: Request, res: Response) => {
             pipelineId,
             defaultStage,
             branchId,
+            defaultCampaignName,
             applyAssignmentRules,
             splitUserIds,
             duplicateAction

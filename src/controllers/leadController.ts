@@ -128,11 +128,23 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
             where.source = req.query.source as LeadSource;
         }
 
-        // Filter: Meta Ads campaign (only meaningful alongside source=meta_leadgen).
-        // Lead has no campaign FK, only sourceDetails Json - same JSON-path
-        // filtering pattern analyticsController.ts's getLeadsByStage already uses.
+        // Filter: Campaign. Lead has no campaign FK, only sourceDetails Json -
+        // same JSON-path filtering pattern analyticsController.ts's
+        // getLeadsByStage already uses. Not just Meta Ads anymore - bulk-
+        // imported leads are tagged with sourceDetails.campaignName (no
+        // campaignId, since there's no live ad account behind them), so this
+        // matches on EITHER key rather than assuming campaignId is always
+        // present. Pushed into andConditions (not assigned directly to
+        // where.sourceDetails) so it combines correctly instead of clobbering
+        // anything, matching the OR-combining pattern used elsewhere in this
+        // function.
         if (req.query.campaignId) {
-            where.sourceDetails = { path: ['campaignId'], equals: req.query.campaignId as string };
+            andConditions.push({
+                OR: [
+                    { sourceDetails: { path: ['campaignId'], equals: req.query.campaignId as string } },
+                    { sourceDetails: { path: ['campaignName'], equals: req.query.campaignId as string } }
+                ]
+            });
         }
 
         // Filter: Search (OR condition)
