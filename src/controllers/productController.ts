@@ -53,7 +53,8 @@ export const getProducts = async (req: Request, res: Response) => {
             where,
             skip,
             take: limit,
-            orderBy: { createdAt: 'desc' }
+            orderBy: { createdAt: 'desc' },
+            include: { branch: { select: { id: true, name: true } } }
         });
 
         res.json({
