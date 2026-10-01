@@ -25,6 +25,7 @@ import {
 } from '../controllers/subscriptionPlanController';
 import { protect } from '../middleware/authMiddleware';
 import { getSystemSettings, updateSystemSettings } from '../controllers/systemSettingsController';
+import { getAiSettings, updateAiSettings } from '../controllers/aiSettingsController';
 import { getGlobalRoles, upsertGlobalRole } from '../controllers/roleController';
 import { exportPlatformData, restorePlatformData } from '../controllers/backupController';
 import {
@@ -55,6 +56,10 @@ router.post('/platform/restore', protect, restorePlatformData);
 // System Settings
 router.get('/settings', protect, getSystemSettings);
 router.put('/settings', protect, updateSystemSettings);
+
+// AI Integration (Gemini/Groq key management, superadmin-gated + encrypted at rest)
+router.get('/ai-settings', protect, getAiSettings);
+router.put('/ai-settings', protect, updateAiSettings);
 
 // Organisation Management
 router.get('/organisations', protect, getAllOrganisations);

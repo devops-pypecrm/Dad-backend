@@ -1,4 +1,5 @@
 import express from 'express';
+import { getTrendInsight } from '../controllers/aiInsightController';
 import {
     getDashboardStats,
     getSalesChartData,
@@ -44,5 +45,6 @@ router.get('/branch-performance', protect, getBranchPerformance);
 router.get('/user-trends-summary', protect, getUserTrendsSummary);
 router.get('/user-deal-ranking', protect, getUserDealRanking);
 router.get('/lead-health', protect, getLeadHealth);
+router.get('/ai-insight', protect, getTrendInsight);
 
 export default router;
