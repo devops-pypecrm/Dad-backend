@@ -78,6 +78,21 @@ export const createProduct = async (req: Request, res: Response) => {
 
         if (!orgId) return res.status(403).json({ message: 'No org' });
 
+        // branchId: explicit selection from the Add Product form - "" or null means
+        // "All Branches" (org-wide, visible regardless of the viewer's branch - see
+        // the branch-scoping OR in getProducts above). Falls back to the creator's
+        // own branch only when the field is omitted entirely (older callers),
+        // matching the previous hardcoded default.
+        const branchIdProvided = Object.prototype.hasOwnProperty.call(req.body, 'branchId');
+        const requestedBranchId: string | null = branchIdProvided ? (req.body.branchId || null) : (user.branchId || null);
+
+        if (requestedBranchId) {
+            const branch = await prisma.branch.findFirst({ where: { id: requestedBranchId, organisationId: orgId, isDeleted: false } });
+            if (!branch) {
+                return res.status(400).json({ message: 'Selected branch not found in your organisation' });
+            }
+        }
+
         const product = await prisma.product.create({
             data: {
                 name: req.body.name,
@@ -86,9 +101,15 @@ export const createProduct = async (req: Request, res: Response) => {
                 basePrice: Number(req.body.basePrice),
                 category: req.body.category,
                 tags: req.body.tags,
+                // Previously dropped on create even though the Add Product form
+                // already sends them - a new product always landed Active with no
+                // brochure attached regardless of what was chosen/uploaded.
+                isActive: req.body.isActive !== undefined ? Boolean(req.body.isActive) : undefined,
+                isCustom: req.body.isCustom !== undefined ? Boolean(req.body.isCustom) : undefined,
+                brochureUrl: req.body.brochureUrl,
                 organisation: { connect: { id: orgId } },
                 createdBy: { connect: { id: user.id } },
-                ...(user.branchId ? { branch: { connect: { id: user.branchId } } } : {})
+                ...(requestedBranchId ? { branch: { connect: { id: requestedBranchId } } } : {})
             }
         });
 
@@ -156,6 +177,19 @@ export const updateProduct = async (req: Request, res: Response) => {
             if (!orgId) return res.status(403).json({ message: 'No org' });
             if (existingProduct.organisationId !== orgId) {
                 return res.status(403).json({ message: 'Not authorized to update this product' });
+            }
+        }
+
+        // branchId: "" or null from the Edit form means "All Branches" (cleared to
+        // org-wide); a specific id must actually belong to this org, or a mis-sent
+        // id would silently scope the product to a branch nothing can manage it from.
+        if (Object.prototype.hasOwnProperty.call(req.body, 'branchId')) {
+            req.body.branchId = req.body.branchId || null;
+            if (req.body.branchId) {
+                const branch = await prisma.branch.findFirst({ where: { id: req.body.branchId, organisationId: existingProduct.organisationId, isDeleted: false } });
+                if (!branch) {
+                    return res.status(400).json({ message: 'Selected branch not found in this organisation' });
+                }
             }
         }
 
