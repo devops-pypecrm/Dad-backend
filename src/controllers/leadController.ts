@@ -151,6 +151,22 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
         if (req.query.search) {
             const search = String(req.query.search).trim();
             const searchNoSpace = search.replace(/\s+/g, '');
+
+            // `phone` is stored WITHOUT the country code (that's the separate
+            // phoneCountryCode column) - so a search like "+919496923534"
+            // never matched the stored "9496923534" since the field is
+            // shorter than the search string itself (contains() can't match
+            // the other way around). Strip digits and also try the search
+            // with a leading country-code (1-3 digits, covers nearly all
+            // real calling codes) peeled off, so "+91XXXXXXXXXX" or
+            // "91XXXXXXXXXX" both still match the bare local number.
+            const searchDigits = search.replace(/\D/g, '');
+            const phoneCandidates = Array.from(new Set(
+                [search, searchNoSpace, searchDigits,
+                    ...(searchDigits.length > 6 ? [1, 2, 3].map(n => searchDigits.slice(n)) : [])]
+                    .filter(s => s.length >= 4)
+            ));
+
             andConditions.push({
                 OR: [
                     { firstName: { contains: search, mode: 'insensitive' } },
@@ -161,10 +177,10 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
                     { email: { contains: searchNoSpace, mode: 'insensitive' } },
                     { company: { contains: search, mode: 'insensitive' } },
                     { company: { contains: searchNoSpace, mode: 'insensitive' } },
-                    { phone: { contains: search, mode: 'insensitive' } },
-                    { phone: { contains: searchNoSpace, mode: 'insensitive' } },
-                    { secondaryPhone: { contains: search, mode: 'insensitive' } },
-                    { secondaryPhone: { contains: searchNoSpace, mode: 'insensitive' } }
+                    ...phoneCandidates.flatMap(c => ([
+                        { phone: { contains: c, mode: 'insensitive' as const } },
+                        { secondaryPhone: { contains: c, mode: 'insensitive' as const } }
+                    ]))
                 ]
             });
         }
