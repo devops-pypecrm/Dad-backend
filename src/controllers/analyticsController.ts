@@ -1654,30 +1654,42 @@ export const getLeadHealth = async (req: Request, res: Response) => {
         const isSuperAdmin = user.isSuperAdmin || checkSuperAdmin(user);
         const branchFilter = getBranchFilter(req);
         const visibilityFilter = await getLeadVisibilityFilter(user, isSuperAdmin);
-        // The Dashboard's date-range filter, forwarded here the same way branch is —
-        // interpreted as "created within this window", matching the list pages.
-        const createdAtFilter = getDateFilter(req, 'createdAt') || {};
+        // Deliberately NOT applying the dashboard's createdAt date-range filter here
+        // (unlike branch, which is a legitimate scope). These two counts are a
+        // backlog/health check - "is anything sitting neglected right now" - not a
+        // "this month" metric. Scoping by createdAt silently hid the real backlog:
+        // an org with thousands of leads built up over months showed near-zero
+        // unattended/no-activity under the dashboard's default "This Month" filter,
+        // because almost all of the neglected leads were created in prior months.
 
         const staleThreshold = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-        // `interactions: { none: {} }` (no filter conditions inside `none`) compiles
-        // to an UNCORRELATED, ORG-UNSCOPED `NOT IN (SELECT leadId FROM Interaction
-        // WHERE leadId IS NOT NULL)` — i.e. it scans/builds a set from EVERY
-        // organisation's Interaction rows platform-wide, not just this org's, which
-        // timed out in production once that table grew large (confirmed: ~30s on a
-        // real org, vs ~3s with this two-step version). Prisma only generates an
-        // efficient correlated NOT EXISTS when `none`'s filter is non-empty (see
-        // `noActivityLeads` below, which was never slow for exactly that reason).
-        // Fetching this org's own interacted lead ids first (via `Interaction.
-        // organisationId`, already indexed) and excluding them via `id: { notIn }`
-        // avoids the bad codegen entirely while returning identical results.
-        const interactedLeadIds = (
-            await prisma.interaction.findMany({
+        // `interactions: { none: {...} } }` — EVEN with a non-empty filter inside
+        // `none` — compiles to an UNCORRELATED, ORG-UNSCOPED
+        // `NOT IN (SELECT leadId FROM Interaction WHERE date >= $threshold)`, i.e.
+        // it scans/builds a set from EVERY organisation's Interaction rows in the
+        // window platform-wide, not just this org's. Confirmed directly via Prisma
+        // query logging + EXPLAIN ANALYZE: ~193s on a real org (20k+ leads) vs
+        // ~100ms for the equivalent hand-written correlated NOT EXISTS using the
+        // exact same leadId+date index - the assumption that a non-empty `none`
+        // filter gets an efficient correlated NOT EXISTS does NOT hold here.
+        // Fetching this org's own recently-active lead ids first (scoped by
+        // `Interaction.organisationId`, already indexed) and excluding them via
+        // `id: { notIn }` avoids the bad codegen entirely while returning
+        // identical results - same workaround as `unattendedLeads` below already
+        // used for its own (empty-filter) version of this same Prisma behavior.
+        const [interactedLeadIds, recentlyActiveLeadIds] = await Promise.all([
+            prisma.interaction.findMany({
                 where: { organisationId: orgId, leadId: { not: null } },
                 select: { leadId: true },
                 distinct: ['leadId'],
-            })
-        ).map((i) => i.leadId as string);
+            }).then(rows => rows.map((i) => i.leadId as string)),
+            prisma.interaction.findMany({
+                where: { organisationId: orgId, leadId: { not: null }, date: { gte: staleThreshold } },
+                select: { leadId: true },
+                distinct: ['leadId'],
+            }).then(rows => rows.map((i) => i.leadId as string)),
+        ]);
 
         const [unattendedLeads, noActivityLeads] = await Promise.all([
             prisma.lead.count({
@@ -1692,7 +1704,6 @@ export const getLeadHealth = async (req: Request, res: Response) => {
                     id: { notIn: interactedLeadIds },
                     ...branchFilter,
                     ...visibilityFilter,
-                    ...createdAtFilter,
                 },
             }),
             prisma.lead.count({
@@ -1703,10 +1714,9 @@ export const getLeadHealth = async (req: Request, res: Response) => {
                     updatedAt: { lt: staleThreshold },
                     // Confirm directly there's no call/WhatsApp/email/meeting/note in the
                     // same window too, rather than trusting updatedAt alone.
-                    interactions: { none: { date: { gte: staleThreshold } } },
+                    id: { notIn: recentlyActiveLeadIds },
                     ...branchFilter,
                     ...visibilityFilter,
-                    ...createdAtFilter,
                 },
             }),
         ]);

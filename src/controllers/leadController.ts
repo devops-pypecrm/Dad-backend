@@ -14,28 +14,6 @@ import { GallaboxService } from '../services/gallaboxService';
 import DuplicateLeadService from '../services/duplicateLeadService';
 // Dynamic import used for OpenAI to avoid startup errors if missing
 
-// Shared by the dashboard-linked lead-health list endpoints (getUnattendedLeads,
-// getNoActivityLeads) below — mirrors the IST-aware createdAt date-range logic
-// already inlined in getLeads, so a date range picked on the Dashboard filters
-// "created within this window" consistently everywhere.
-const buildCreatedAtDateFilter = (req: express.Request): { gte?: Date; lt?: Date } | null => {
-    if (!req.query.startDate && !req.query.endDate) return null;
-    const dateFilter: { gte?: Date; lt?: Date } = {};
-    if (req.query.startDate) {
-        const s = new Date(req.query.startDate as string);
-        const start = new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate(), 0, 0, 0, 0));
-        start.setMinutes(start.getMinutes() - 330);
-        dateFilter.gte = start;
-    }
-    if (req.query.endDate) {
-        const e = new Date(req.query.endDate as string);
-        const end = new Date(Date.UTC(e.getUTCFullYear(), e.getUTCMonth(), e.getUTCDate() + 1, 0, 0, 0, 0));
-        end.setMinutes(end.getMinutes() - 330);
-        dateFilter.lt = end;
-    }
-    return dateFilter;
-};
-
 // GET /api/leads
 export const getLeads = async (req: express.Request, res: express.Response) => {
     try {
@@ -2451,8 +2429,12 @@ export const getUnattendedLeads = async (req: express.Request, res: express.Resp
         if (req.query.source && Object.values(LeadSource).includes(req.query.source as LeadSource)) {
             where.source = req.query.source as LeadSource;
         }
-        const createdAtFilter = buildCreatedAtDateFilter(req);
-        if (createdAtFilter) where.createdAt = createdAtFilter;
+        // Deliberately not applying a createdAt filter here even when the dashboard
+        // forwards a date range - this is a backlog view ("still unattended right
+        // now"), not a "created in this window" one. Filtering by creation date hid
+        // the real backlog whenever the dashboard's default "This Month" range was
+        // active, since most neglected leads were created in prior months. See the
+        // matching fix + longer explanation on getLeadHealth in analyticsController.ts.
 
         const [total, leads] = await Promise.all([
             prisma.lead.count({ where }),
@@ -2494,6 +2476,21 @@ export const getNoActivityLeads = async (req: express.Request, res: express.Resp
 
         const staleThreshold = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
+        // `interactions: { none: { date: {...} } } }` compiles to an UNCORRELATED,
+        // ORG-UNSCOPED `NOT IN (SELECT leadId FROM Interaction WHERE date >= ...)`
+        // - confirmed via Prisma query logging to take ~193s on a real org (20k+
+        // leads), vs ~100ms for the equivalent correlated NOT EXISTS using the
+        // same leadId+date index. Fetching this org's own recently-active lead
+        // ids first (scoped by `Interaction.organisationId`, already indexed)
+        // and excluding them via `id: { notIn }` avoids the bad codegen entirely.
+        const recentlyActiveLeadIds = (
+            await prisma.interaction.findMany({
+                where: { organisationId: orgId, leadId: { not: null }, date: { gte: staleThreshold } },
+                select: { leadId: true },
+                distinct: ['leadId'],
+            })
+        ).map((i) => i.leadId as string);
+
         const where: any = {
             organisationId: orgId,
             isDeleted: false,
@@ -2505,7 +2502,7 @@ export const getNoActivityLeads = async (req: express.Request, res: express.Resp
             // record" and can miss gaps in whichever code path logged the interaction.
             // Directly confirm there's no call/WhatsApp/email/meeting/note of any kind in
             // the same window before calling a lead "no activity".
-            interactions: { none: { date: { gte: staleThreshold } } },
+            id: { notIn: recentlyActiveLeadIds },
             ...visibilityFilter,
         };
         if (req.query.branchId) where.branchId = req.query.branchId as string;
@@ -2513,8 +2510,8 @@ export const getNoActivityLeads = async (req: express.Request, res: express.Resp
         if (req.query.source && Object.values(LeadSource).includes(req.query.source as LeadSource)) {
             where.source = req.query.source as LeadSource;
         }
-        const createdAtFilter = buildCreatedAtDateFilter(req);
-        if (createdAtFilter) where.createdAt = createdAtFilter;
+        // Deliberately not applying a createdAt filter here - see the matching note
+        // on getUnattendedLeads above / getLeadHealth in analyticsController.ts.
 
         const [total, leads] = await Promise.all([
             prisma.lead.count({ where }),
