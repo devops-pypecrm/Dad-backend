@@ -12,6 +12,22 @@ const getDirectReports = async (userId: string): Promise<any[]> => {
     });
 };
 
+// Helper: split a total across n people so the shares always add back up to the total.
+// Whole units are spread one at a time (10 across 3 -> 4,3,3) instead of dumping the remainder on the first person;
+// any fractional part of a revenue amount goes to the first person.
+const splitEvenly = (total: number, n: number): number[] => {
+    const base = Math.floor(total / n);
+    const rest = total - base * n;
+    const whole = Math.floor(rest);
+    const frac = rest - whole;
+    return Array.from({ length: n }, (_, i) => base + (i < whole ? 1 : 0) + (i === 0 ? frac : 0));
+};
+
+const ADMIN_ROLES = ['super_admin', 'admin'];
+const PERIODS = ['monthly', 'quarterly', 'yearly'];
+const METRICS = ['revenue', 'units'];
+const SCOPES = ['INDIVIDUAL', 'HIERARCHY'];
+
 // Helper: Calculate period dates
 const calculatePeriodDates = (period: string): { startDate: Date; endDate: Date } => {
     const now = new Date();
@@ -50,9 +66,21 @@ export const assignTarget = async (req: Request, res: Response) => {
 
         if (!userOrgId) return res.status(400).json({ message: 'Organisation not found' });
 
+        // Validate inputs: the UI checks these too, but the API must not trust it
+        if (typeof targetValue !== 'number' || !Number.isFinite(targetValue) || targetValue <= 0) {
+            return res.status(400).json({ message: 'Target value must be a number greater than 0' });
+        }
+        if (!PERIODS.includes(period)) return res.status(400).json({ message: 'Period must be monthly, quarterly or yearly' });
+        if (!METRICS.includes(metric)) return res.status(400).json({ message: 'Metric must be revenue or units' });
+        if (!SCOPES.includes(scope)) return res.status(400).json({ message: 'Scope must be INDIVIDUAL or HIERARCHY' });
+        if (metric === 'units' && !Number.isInteger(targetValue)) {
+            return res.status(400).json({ message: 'A units target must be a whole number' });
+        }
+        const isAdminUser = user.isSuperAdmin || ADMIN_ROLES.includes(user.role);
+
         // Validate Product if provided
         if (productId) {
-            const product = await prisma.product.findUnique({ where: { id: productId } });
+            const product = await prisma.product.findFirst({ where: { id: productId, organisationId: userOrgId } });
             if (!product) return res.status(400).json({ message: 'Product not found' });
         }
 
@@ -60,6 +88,7 @@ export const assignTarget = async (req: Request, res: Response) => {
 
         let mainTarget;
         const childTargets = [];
+        const skipped: string[] = []; // people who already had a matching target and so got no share
 
         // --- TEAM ASSIGNMENT ---
         if (teamId) {
@@ -70,6 +99,9 @@ export const assignTarget = async (req: Request, res: Response) => {
             });
 
             if (!team) return res.status(404).json({ message: 'Team not found' });
+            if (!isAdminUser && team.managerId !== user.id) {
+                return res.status(403).json({ message: 'Only an admin or the team manager can assign a team target' });
+            }
 
             // Check for existing team target
             const existingTeamTarget = await prisma.salesTarget.findFirst({
@@ -109,14 +141,11 @@ export const assignTarget = async (req: Request, res: Response) => {
             // Distribute to team members
             if (team.members.length > 0) {
                 const totalMembers = team.members.length;
-                const baseValue = Math.floor(targetValue / totalMembers);
-                let remainder = targetValue - (baseValue * totalMembers);
+                const shares = splitEvenly(targetValue, totalMembers);
 
                 for (let i = 0; i < team.members.length; i++) {
                     const member = team.members[i];
-                    // Give remainder to the first member (or distribute piece-meal if we wanted true exact floats)
-                    // For amounts or units, giving remainder to first member is standard.
-                    const memberValue = i === 0 ? baseValue + remainder : baseValue;
+                    const memberValue = shares[i];
 
                     // Check if member already has a target
                     const existingMemberTarget = await prisma.salesTarget.findFirst({
@@ -178,6 +207,13 @@ export const assignTarget = async (req: Request, res: Response) => {
 
             if (!assignee) return res.status(404).json({ message: 'User not found' });
             if (assignee.organisationId !== userOrgId) return res.status(403).json({ message: 'Cannot assign target to crossover user' });
+            if (assignee.id === user.id) return res.status(403).json({ message: 'You cannot assign a target to yourself' });
+            if (!isAdminUser) {
+                const downline = await getSubordinateIdsRecursive(user.id);
+                if (!downline.includes(assignee.id)) {
+                    return res.status(403).json({ message: 'You can only assign targets to people who report to you' });
+                }
+            }
 
             // Check existing
             const existingTarget = await prisma.salesTarget.findFirst({
@@ -189,8 +225,9 @@ export const assignTarget = async (req: Request, res: Response) => {
                     startDate,
                     endDate,
                     isDeleted: false,
-                    opportunityType: opportunityType || null,
-                    scope: scope || 'HIERARCHY'
+                    opportunityType: opportunityType || null
+                    // scope is deliberately not part of the match: a rollup and an individual target for the same
+                    // person, period, product and type would count the same sales twice
                 }
             });
 
@@ -221,12 +258,11 @@ export const assignTarget = async (req: Request, res: Response) => {
             if (shouldDistribute) {
                 // Distribute strictly to Reports (no personal slice for manager)
                 const totalMembers = directReports.length;
-                const baseValue = Math.floor(targetValue / totalMembers);
-                const remainder = targetValue - (baseValue * totalMembers);
+                const shares = splitEvenly(targetValue, totalMembers);
 
                 for (let i = 0; i < directReports.length; i++) {
                     const report = directReports[i];
-                    const reportValue = i === 0 ? baseValue + remainder : baseValue;
+                    const reportValue = shares[i];
 
                     const existingSubTarget = await prisma.salesTarget.findFirst({
                         where: {
@@ -242,7 +278,9 @@ export const assignTarget = async (req: Request, res: Response) => {
                         }
                     });
 
-                    if (!existingSubTarget) {
+                    if (existingSubTarget) {
+                        skipped.push(`${report.firstName} ${report.lastName}`);
+                    } else {
                         // Recursively create targets
                         // distributeToSubordinates will handle creating the report's target and ITS children
                         await distributeToSubordinates(
@@ -287,7 +325,8 @@ export const assignTarget = async (req: Request, res: Response) => {
         res.status(201).json({
             message: 'Target assigned successfully',
             target: mainTarget,
-            childTargets
+            childTargets,
+            skipped
         });
     } catch (error) {
         console.error('assignTarget Error:', error);
@@ -368,13 +407,12 @@ const distributeToSubordinates = async (
     if (hasReports) {
         // Distribute strictly to children
         const totalMembers = directReports.length;
-        const baseValue = Math.floor(targetValue / totalMembers);
-        const remainder = targetValue - (baseValue * totalMembers);
+        const shares = splitEvenly(targetValue, totalMembers);
 
         // Distribute to reports
         for (let i = 0; i < directReports.length; i++) {
             const report = directReports[i];
-            const reportValue = i === 0 ? baseValue + remainder : baseValue;
+            const reportValue = shares[i];
 
             await distributeToSubordinates(
                 report.id,
