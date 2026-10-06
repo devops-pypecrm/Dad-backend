@@ -500,11 +500,12 @@ export const sendTestReport = async (req: Request, res: Response) => {
         }
 
         // Send Email if enabled
-        if (org.dailyReportEmailEnabled && user.email) {
+        const targetEmail = org.contactEmail || user.email;
+        if (org.dailyReportEmailEnabled && targetEmail) {
             const { EmailService } = await import('../services/emailService');
             const emailHtml = ReportingService.formatEmailReport(stats, org.name);
             await EmailService.sendEmail(
-                user.email,
+                targetEmail,
                 `Test Daily Business Report - ${org.name}`,
                 emailHtml,
                 orgId

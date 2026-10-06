@@ -133,18 +133,18 @@ export const initCronJobs = () => {
                             console.log(`[Cron] Sending general WhatsApp report to ${org.name} admin: ${admin.firstName} (${targetPhone})`);
                             await waClient.sendTextMessage(targetPhone, adminReport);
                         }
+                    }
 
-                        // Email
-                        if (org.dailyReportEmailEnabled && admin.email) {
-                            console.log(`[Cron] Sending daily Email report to ${org.name} admin: ${admin.email}`);
-                            const emailHtml = ReportingService.formatEmailReport(stats, org.name);
-                            await EmailService.sendEmail(
-                                admin.email,
-                                `Daily Business Report - ${org.name}`,
-                                emailHtml,
-                                org.id
-                            );
-                        }
+                    // Email Report (to Contact Email)
+                    if (org.dailyReportEmailEnabled && org.contactEmail) {
+                        console.log(`[Cron] Sending daily Email report to ${org.name} contact email: ${org.contactEmail}`);
+                        const emailHtml = ReportingService.formatEmailReport(stats, org.name);
+                        await EmailService.sendEmail(
+                            org.contactEmail,
+                            `Daily Business Report - ${org.name}`,
+                            emailHtml,
+                            org.id
+                        );
                     }
 
                     // Send to Managers (Specific reports)
