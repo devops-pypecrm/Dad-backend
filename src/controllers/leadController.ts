@@ -838,6 +838,16 @@ export const updateLead = async (req: express.Request, res: express.Response) =>
                 assignedToId: updates.assignedToId || currentLead.assignedToId || requester.id,
                 branchId: currentLead.branchId
             });
+
+            // Recompute from the FollowUp table rather than trusting the raw
+            // client value - this was previously written straight to
+            // leadUpdates.nextFollowUp below (see allowedFields), a second,
+            // uncoordinated writer that could drift from what the FollowUp
+            // table actually has (e.g. the dedicated Follow-ups page
+            // rescheduling the same row afterward via FollowUpService, which
+            // never touched this directly-set value). syncLeadFollowUp is
+            // now the single source of truth for this field.
+            await FollowUpService.syncLeadFollowUp(leadId);
         } else if (updates.nextFollowUp === null) {
             // User explicitly cleared the follow-up date, so defer all active follow-ups
             await prisma.followUp.updateMany({
@@ -848,6 +858,8 @@ export const updateLead = async (req: express.Request, res: express.Response) =>
                 },
                 data: { status: 'deferred' }
             });
+
+            await FollowUpService.syncLeadFollowUp(leadId);
         }
 
         if (updates.customFields) {
@@ -869,11 +881,14 @@ export const updateLead = async (req: express.Request, res: express.Response) =>
             updates.phone = cleanPhone;
         }
 
-        // List of allowed fields to prevent relation/schema mismatches crashing Prisma
+        // List of allowed fields to prevent relation/schema mismatches crashing Prisma.
+        // nextFollowUp is deliberately excluded - it's a cached field now written only
+        // by FollowUpService.syncLeadFollowUp (see the block above), never directly
+        // from client input, so there's a single source of truth for it.
         const allowedFields = [
             'firstName', 'lastName', 'email', 'phone', 'secondaryPhone', 'company', 'enquiryAbout', 'jobTitle', 'address',
             'status', 'source', 'sourceDetails', 'stage', 'tags', 'potentialValue',
-            'nextFollowUp', 'customFields', 'isHotLead', 'lostReason', 'notes',
+            'customFields', 'isHotLead', 'lostReason', 'notes',
             'country', 'countryCode', 'phoneCountryCode', 'city', 'state', 'zip'
         ];
 
