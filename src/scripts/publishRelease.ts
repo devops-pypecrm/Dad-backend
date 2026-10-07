@@ -12,7 +12,7 @@
  */
 import prisma from '../config/prisma';
 
-const PLATFORMS = ['mobile', 'helper'];
+const PLATFORMS = ['mobile', 'helper', 'dialer'];
 
 async function main() {
     const [platform, apkFileName, versionName, versionCodeRaw, releaseNotes] = process.argv.slice(2);

@@ -17,13 +17,14 @@
  * backgrounded/killed, tapping the system notification deep-links straight
  * to the in-app Updates screen.
  *
- * `platform=helper`: a deliberate no-op, not an oversight. Dad-call-recorder
- * (PypeCRM Helper) has no Firebase/FCM integration at all — no token to
- * push to, and no in-app bell UI to show a CRM `Notification` row in even
- * if we created one — so there is nothing this script could actually
- * deliver. Its `UpdateCheckerOverlay` already polls the release manifest on
- * every app open and pops the same update dialog without any push needed;
- * this branch just says so instead of silently doing nothing or (worse)
+ * `platform=helper` / `platform=dialer`: a deliberate no-op, not an
+ * oversight. Neither Dad-call-recorder (PypeCRM Helper) nor Dad-dialer has
+ * any Firebase/FCM integration — no token to push to, and no in-app bell UI
+ * to show a CRM `Notification` row in even if we created one — so there is
+ * nothing this script could actually deliver for either. Both apps' own
+ * in-app update checker already polls the release manifest on every app
+ * open and pops the same update dialog without any push needed; this
+ * branch just says so instead of silently doing nothing or (worse)
  * pretending to have notified someone.
  *
  * Run AFTER `publishRelease.ts` has actually published the new version —
@@ -34,7 +35,7 @@
  *
  * Usage:
  *   npx tsx src/scripts/notifyAppUpdate.ts <platform> <versionName>
- *   <platform> must be "mobile" or "helper"
+ *   <platform> must be "mobile", "helper", or "dialer"
  */
 import prisma from '../config/prisma';
 import { NotificationService } from '../services/notificationService';
@@ -49,15 +50,16 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 async function main() {
     const [platform, versionName] = process.argv.slice(2);
-    if (!platform || !versionName || !['mobile', 'helper'].includes(platform)) {
+    if (!platform || !versionName || !['mobile', 'helper', 'dialer'].includes(platform)) {
         console.error('Usage: npx tsx src/scripts/notifyAppUpdate.ts <platform> <versionName>');
-        console.error('  <platform> must be "mobile" or "helper"');
+        console.error('  <platform> must be "mobile", "helper", or "dialer"');
         process.exit(1);
     }
 
-    if (platform === 'helper') {
+    if (platform === 'helper' || platform === 'dialer') {
+        const appName = platform === 'helper' ? 'PypeCRM Helper' : 'Pype Dialer';
         console.log(
-            'PypeCRM Helper has no push notifications wired up — nothing to send. ' +
+            `${appName} has no push notifications wired up — nothing to send. ` +
             'Its in-app update popup already checks on every app open, so no action is needed here.'
         );
         return;

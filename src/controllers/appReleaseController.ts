@@ -9,7 +9,7 @@ import path from "path";
  * table/migration would be overkill. `SystemSetting.value` is a plain
  * `String` column, so each blob is stored JSON-stringified.
  */
-const PLATFORMS = ["mobile", "helper"] as const;
+const PLATFORMS = ["mobile", "helper", "dialer"] as const;
 type Platform = (typeof PLATFORMS)[number];
 
 const settingKey = (platform: Platform) => `app_release_${platform}`;
