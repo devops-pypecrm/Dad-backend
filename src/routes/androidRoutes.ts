@@ -7,6 +7,16 @@ import { getAndroidLeads, getLeadLastNote, uploadCallRecording, syncCallLogs, up
 import { logExternalMessage } from '../controllers/whatsAppController';
 import { protect } from '../middleware/authMiddleware';
 import prisma from '../config/prisma';
+import rateLimit from 'express-rate-limit';
+
+// Rate limiter for WhatsApp sync endpoint to protect against broken clients
+const whatsappSyncLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 20, // Limit each IP to 20 requests per `window`
+    message: { message: "Too many WhatsApp sync requests from this IP, please try again later." },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
 
 // Rate limiter for bulk-sync: 1 request per user per 30 seconds (was 10
 // minutes — shortened so a call syncs to the CRM almost immediately during
@@ -114,7 +124,7 @@ const handleRecordingUpload = (req: express.Request, res: express.Response, next
 router.get('/leads', protect, getAndroidLeads as any);
 router.get('/leads/:leadId/last-note', protect, getLeadLastNote as any);
 router.post('/recordings', protect, handleRecordingUpload, uploadCallRecording as any);
-router.post('/whatsapp/sync', protect, logExternalMessage as any);
+router.post('/whatsapp/sync', whatsappSyncLimiter, protect, logExternalMessage as any);
 router.post('/bulk-sync', protect, bulkSyncRateLimiter, syncCallLogs as any);
 router.post('/helper-logs', protect, uploadHelperLogs as any);
 
