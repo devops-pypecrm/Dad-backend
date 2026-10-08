@@ -267,6 +267,20 @@ export const updateOrganisation = async (req: Request, res: Response) => {
                 }
             }
         }
+
+        // Encrypt manual CAPI token if provided
+        if (data.integrations?.meta?.capiToken && data.integrations.meta.capiToken.split(':').length !== 3) {
+            data.integrations.meta.capiToken = encrypt(data.integrations.meta.capiToken);
+        }
+
+        if (Array.isArray(data.integrations?.metaAccounts)) {
+            data.integrations.metaAccounts = data.integrations.metaAccounts.map((acc: any) => {
+                if (acc.capiToken && acc.capiToken.split(':').length !== 3) {
+                    return { ...acc, capiToken: encrypt(acc.capiToken) };
+                }
+                return acc;
+            });
+        }
         
         // Handle Gallabox Credential Encryption
         if (data.integrations?.gallabox?.connected) {

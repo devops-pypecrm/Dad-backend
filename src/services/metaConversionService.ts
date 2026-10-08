@@ -28,22 +28,22 @@ interface ConversionEvent {
  * right ad account/pixel), then fall back to the legacy single `meta` object, then
  * to the first connected account that actually has a Pixel ID configured.
  */
-function resolveMetaCapiConfig(integrations: any, branchId?: string | null): { pixelId?: string; accessToken?: string } {
+function resolveMetaCapiConfig(integrations: any, branchId?: string | null): { pixelId?: string; accessToken?: string; capiToken?: string } {
     const legacy = integrations?.meta;
     const accounts: any[] = Array.isArray(integrations?.metaAccounts) ? integrations.metaAccounts : [];
 
     if (branchId) {
         const branchMatch = accounts.find((a) => a.branchId === branchId && a.pixelId);
-        if (branchMatch) return { pixelId: branchMatch.pixelId, accessToken: branchMatch.accessToken };
+        if (branchMatch) return { pixelId: branchMatch.pixelId, accessToken: branchMatch.accessToken, capiToken: branchMatch.capiToken };
         if (legacy?.branchId === branchId && legacy?.pixelId) {
-            return { pixelId: legacy.pixelId, accessToken: legacy.accessToken };
+            return { pixelId: legacy.pixelId, accessToken: legacy.accessToken, capiToken: legacy.capiToken };
         }
     }
 
-    if (legacy?.pixelId) return { pixelId: legacy.pixelId, accessToken: legacy.accessToken };
+    if (legacy?.pixelId) return { pixelId: legacy.pixelId, accessToken: legacy.accessToken, capiToken: legacy.capiToken };
 
     const anyMatch = accounts.find((a) => a.pixelId);
-    if (anyMatch) return { pixelId: anyMatch.pixelId, accessToken: anyMatch.accessToken };
+    if (anyMatch) return { pixelId: anyMatch.pixelId, accessToken: anyMatch.accessToken, capiToken: anyMatch.capiToken };
 
     return {};
 }
@@ -62,16 +62,18 @@ export const MetaConversionService = {
 
             if (!org) return;
 
-            const { pixelId, accessToken: encryptedAccessToken } = resolveMetaCapiConfig(org.integrations, branchId);
+            const { pixelId, accessToken: encryptedOAuthToken, capiToken: encryptedCapiToken } = resolveMetaCapiConfig(org.integrations, branchId);
 
-            if (!pixelId || !encryptedAccessToken) {
+            // Prefer the custom CAPI token if provided; otherwise fallback to the OAuth token
+            const encryptedToken = encryptedCapiToken || encryptedOAuthToken;
+
+            if (!pixelId || !encryptedToken) {
                 console.warn(`[MetaConversions] Org ${organisationId} missing Pixel ID or Access Token`);
                 return;
             }
 
-            // Stored tokens are encrypted at rest (see metaLeadService's identical decrypt
-            // step) - sending the raw encrypted blob to Graph API would just fail auth.
-            const accessToken = decrypt(encryptedAccessToken);
+            // Stored tokens are encrypted at rest
+            const accessToken = decrypt(encryptedToken);
 
             const events = Array.isArray(event) ? event : [event];
 
