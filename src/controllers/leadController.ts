@@ -806,6 +806,32 @@ export const updateLead = async (req: express.Request, res: express.Response) =>
                     reason: req.body.reason || 'Manual Status Update'
                 }
             }).catch(() => {});
+
+            // Meta Conversion API: Down-funnel Lead Quality Events
+            // This trains Meta's algorithm to find high-quality leads, not just cheap ones.
+            import('../services/metaConversionService').then(({ MetaConversionService }) => {
+                let eventName = '';
+                if (updates.status === 'qualified') eventName = 'Lead_Qualified';
+                else if (updates.status === 'converted') eventName = 'Lead_Converted';
+                else if (updates.status === 'lost' || updates.status === 'rejected') eventName = 'Lead_Disqualified';
+
+                if (eventName) {
+                    MetaConversionService.sendEvent(currentLead.organisationId, {
+                        eventName,
+                        userData: {
+                            email: currentLead.email,
+                            phone: currentLead.phone,
+                            firstName: currentLead.firstName,
+                            lastName: currentLead.lastName,
+                            externalId: currentLead.id,
+                        },
+                        customData: {
+                            lead_status: updates.status,
+                            previous_status: currentLead.status
+                        }
+                    }, currentLead.branchId);
+                }
+            }).catch(console.error);
         }
 
         // Track Follow-up Change and Create Task
