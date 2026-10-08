@@ -30,6 +30,13 @@ model Organisation {
   leadScoringConfig       Json?
   dailyReportTime         String                   @default("09:00") // Time to send daily business report (HH:mm)
   dailyReportEmailEnabled Boolean                  @default(false)
+  // Outstanding balance owed, computed from the org's active License.customPrice
+  // x current user count x months elapsed since billingStartDate. No invoice/
+  // ledger table exists yet - this is a running total, recomputed and
+  // overwritten whenever billing is reconciled (e.g. super-admin "recalculate
+  // dues" action), not an append-only history.
+  amountDue               Float?                   @default(0)
+  billingStartDate        DateTime?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   isDeleted               Boolean                  @default(false)
