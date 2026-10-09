@@ -5,6 +5,22 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { synchronizeDurations, resolveBestDurationSeconds, formatCallDurationDescription, normalizeDuration, getAudioDuration, transcodeToPlayableAudio } from '../utils/callUtils';
 
+// Android's CallLog `_ID` (the raw value `hardwareId` is built from,
+// namespaced as `${userId}_${rawId}`) is NOT a forever-unique identifier —
+// it's scoped to the device's current CallLog table state, and CAN be
+// reused after the log is pruned/rotated (observed directly in production:
+// a hardwareId match healed two real Interaction rows from June 2026 with
+// an October 2026 call's data, silently overwriting them — the healed
+// rows' `date` stayed frozen at June per the "never touch date on heal"
+// rule below, so the real call also never showed up in any date-filtered
+// report). A hardwareId match is only trustworthy within a bounded window
+// of the new call's own timestamp; outside that window, treat it as a
+// coincidental ID reuse — fall through to fuzzy/new-row logic instead of
+// healing a wildly-unrelated historical record.
+const HARDWARE_ID_MATCH_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
+const isWithinHardwareIdMatchWindow = (candidateDate: Date, callDate: Date): boolean =>
+    Math.abs(candidateDate.getTime() - callDate.getTime()) <= HARDWARE_ID_MATCH_WINDOW_MS;
+
 // DB-backed, NOT in-memory: this backend runs as multiple PM2-clustered
 // processes (see cronService.ts's own NODE_APP_INSTANCE guard, and the
 // bulk-sync rate limiter in androidRoutes.ts, added for the exact same
@@ -454,10 +470,15 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
         }
 
         if (!existingInteraction && hardwareId && hardwareId.length > 0 && hardwareId !== "none") {
-            existingInteraction = await prisma.interaction.findFirst({
+            const hwMatch = await prisma.interaction.findFirst({
                 where: { organisationId: user.organisationId, hardwareId },
                 orderBy: { date: 'desc' }
             });
+            if (hwMatch && isWithinHardwareIdMatchWindow(hwMatch.date, callDate)) {
+                existingInteraction = hwMatch;
+            } else if (hwMatch) {
+                console.warn(`[AndroidUpload] hardwareId ${hardwareId} matched a row from ${hwMatch.date.toISOString()}, too far from this call's ${callDate.toISOString()} — treating as a recycled CallLog _ID, not healing it.`);
+            }
         }
 
         // FUZZY RECONCILIATION: Look for 'initiated' calls if no exact match (User-restricted)
@@ -907,12 +928,19 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                     });
                 }
 
-                // Priority 2: Perfect match by hardwareId
+                // Priority 2: Perfect match by hardwareId — bounded to
+                // HARDWARE_ID_MATCH_WINDOW_MS, see that constant's doc
+                // comment on why an unbounded match is unsafe.
                 if (!existingInteraction && hardwareId && hardwareId.length > 0 && hardwareId !== "none") {
-                    existingInteraction = await prisma.interaction.findFirst({
+                    const hwMatch = await prisma.interaction.findFirst({
                         where: { organisationId: user.organisationId, hardwareId },
                         orderBy: { date: 'desc' }
                     });
+                    if (hwMatch && isWithinHardwareIdMatchWindow(hwMatch.date, callDate)) {
+                        existingInteraction = hwMatch;
+                    } else if (hwMatch) {
+                        console.warn(`[BulkSync] hardwareId ${hardwareId} matched a row from ${hwMatch.date.toISOString()}, too far from this call's ${callDate.toISOString()} — treating as a recycled CallLog _ID, not healing it.`);
+                    }
                 }
 
                 // Priority 3: Fuzzy Match — two phases to avoid merging distinct back-to-back calls
@@ -1176,15 +1204,21 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                 ].filter(Boolean)));
 
                 // Extra guard: if hardwareId was provided, do a final global check
-                // (catches cases where /recordings already created this entry)
+                // (catches cases where /recordings already created this entry).
+                // Bounded to HARDWARE_ID_MATCH_WINDOW_MS — same reasoning as the
+                // Priority 2 match above; an out-of-window "match" is a recycled
+                // CallLog _ID, not the same call, and must fall through to
+                // actually create this row rather than being skipped as a dupe.
                 if (hardwareId && hardwareId.length > 0 && hardwareId !== 'none') {
                     const hwGuard = await prisma.interaction.findFirst({
                         where: { organisationId: user.organisationId, hardwareId }
                     });
-                    if (hwGuard) {
+                    if (hwGuard && isWithinHardwareIdMatchWindow(hwGuard.date, callDate)) {
                         results.synced.push(phoneNumber);
                         trackHardwareId(rawHardwareId, 'synced');
                         continue;
+                    } else if (hwGuard) {
+                        console.warn(`[BulkSync] Final hardwareId guard: ${hardwareId} matched a row from ${hwGuard.date.toISOString()}, too far from this call's ${callDate.toISOString()} — treating as a recycled CallLog _ID, creating a new row instead of skipping.`);
                     }
                 }
 
