@@ -384,8 +384,16 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
             }
         }
 
+        // The audio was already written to disk by multer/transcode before
+        // any of the checks below — delete it on every early exit, or each
+        // rejected/dropped upload leaves an orphaned recording behind.
+        const discardStoredFile = () => {
+            if (storedFilePath) fs.promises.unlink(storedFilePath).catch(() => {});
+        };
+
         if (!targetLeadId && !targetContactId && !phoneNumber) {
             console.error(`[AndroidUpload] Upload failed: No leadId/contactId and no phoneNumber`);
+            discardStoredFile();
             return res.status(400).json({ error: 'leadId, contactId or phoneNumber is required' });
         }
 
@@ -402,6 +410,7 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
 
         if (!targetLeadId && !targetContactId && !canSyncUnknown && !isMissed) {
             console.warn(`[AndroidUpload] Upload skipped: Phone number ${phoneNumber} is not associated with any Lead/Contact and Contact Synchronization is OFF.`);
+            discardStoredFile();
             return res.status(200).json({ message: 'Call dropped: Contact synchronization disabled for non-CRM numbers' });
         }
 
@@ -542,7 +551,7 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
             const incomingIdentifiers = ['1', 'INCOMING', 'IN', 'INB'];
             const outgoingIdentifiers = ['2', 'OUTGOING', 'OUT', 'OUTB'];
             const missedIdentifiers = ['3', 'MISSED', 'MISS'];
-            const rejectedIdentifiers = ['5', 'REJECTED', 'REJ'];
+            const rejectedIdentifiers = ['5', 'REJECTED', 'REJ', '6', 'BLOCKED'];
 
             if (outgoingIdentifiers.includes(rawType)) {
                 direction = 'outbound';
@@ -612,7 +621,7 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
             const incomingIdentifiers = ['1', 'INCOMING', 'IN', 'INB'];
             const outgoingIdentifiers = ['2', 'OUTGOING', 'OUT', 'OUTB'];
             const missedIdentifiers = ['3', 'MISSED', 'MISS'];
-            const rejectedIdentifiers = ['5', 'REJECTED', 'REJ'];
+            const rejectedIdentifiers = ['5', 'REJECTED', 'REJ', '6', 'BLOCKED'];
 
             if (outgoingIdentifiers.includes(rawType)) {
                 direction = 'outbound';
@@ -682,6 +691,9 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                     // status/subject/description should win, not just its duration number, so a
                     // "ghost" 0s failed entry doesn't leave the merged row mislabeled as failed.
                     const incomingIsBetter = finalizedDurationSecs > (raceCheck.duration || 0) * 60;
+                    // This request carries the audio — attach it either way,
+                    // otherwise a merge here silently dropped the recording.
+                    const recordingUrl = recording.fileUrl || undefined;
                     await prisma.interaction.update({
                         where: { id: raceCheck.id },
                         data: incomingIsBetter ? {
@@ -691,9 +703,11 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                             callStatus: status,
                             subject,
                             description: formattedDescription,
+                            recordingUrl,
                             hardwareId: hardwareId || undefined,
                             callSessionId: callSessionId || undefined
                         } : {
+                            recordingUrl,
                             hardwareId: hardwareId || undefined,
                             callSessionId: callSessionId || undefined
                         }
@@ -737,6 +751,20 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
             } catch (err: any) {
                 if (err.code === 'P2002') {
                     console.log(`[AndroidUpload] Duplicate report suppressed via database unique constraint (HwId: ${hardwareId}, SessId: ${callSessionId})`);
+                    // A concurrent request created the row first — still attach
+                    // this request's audio to it rather than discarding it.
+                    if (recording.fileUrl && (hardwareId || callSessionId)) {
+                        await prisma.interaction.updateMany({
+                            where: {
+                                organisationId: user.organisationId,
+                                OR: [
+                                    ...(callSessionId ? [{ callSessionId }] : []),
+                                    ...(hardwareId ? [{ hardwareId }] : [])
+                                ]
+                            },
+                            data: { recordingUrl: recording.fileUrl }
+                        }).catch((e: any) => console.error('[AndroidUpload] Failed to attach recording after P2002', e));
+                    }
                 } else {
                     throw err;
                 }
@@ -833,8 +861,14 @@ export const syncCallLogs = async (req: Request, res: Response) => {
         // 2. Process each call entry (Deduplicated in-memory to prevent duplicates within payload)
         const seenCalls = new Set<string>();
         const uniqueCalls = [];
+        const noNumberHardwareIds: string[] = [];
         for (const call of calls) {
-            if (!call.phoneNumber) continue;
+            if (!call.phoneNumber) {
+                // Hidden/private-number calls: nothing to match or store, now
+                // or on any retry — reported as dropped below.
+                if (call.hardwareId && call.hardwareId !== 'none') noNumberHardwareIds.push(String(call.hardwareId));
+                continue;
+            }
             // Generate a unique deduplication key
             const key = call.callSessionId 
                 ? `session-${call.callSessionId}` 
@@ -854,25 +888,39 @@ export const syncCallLogs = async (req: Request, res: Response) => {
         // and CallSyncWorker in Dad-call-recorder's call_recording_engine, which previously
         // marked its *entire* local retry queue synced (and deleted it) off nothing more than
         // an overall 2xx, silently losing any entry this endpoint legitimately skipped.
-        const results: { synced: string[]; skipped: number; errors: number; syncedHardwareIds: string[]; failedHardwareIds: string[] } = {
+        // NOTE on 'failed' vs 'dropped': entries this endpoint deliberately
+        // drops by policy (no usable phone number, or a non-CRM number while
+        // syncNonCrmContacts is off) will be dropped again on every retry, so
+        // they're reported in syncedHardwareIds ("done, stop resending") as
+        // well as droppedHardwareIds. Reporting them as failed made the
+        // helper keep them queued and re-send them with every bulk-sync
+        // forever. Only genuine processing errors are 'failed' (retryable).
+        const results: { synced: string[]; skipped: number; errors: number; syncedHardwareIds: string[]; failedHardwareIds: string[]; droppedHardwareIds: string[] } = {
             synced: [],
             skipped: calls.length - uniqueCalls.length, // Pre-increment skipped counts for duplicate calls
             errors: 0,
             syncedHardwareIds: [],
-            failedHardwareIds: []
+            failedHardwareIds: [],
+            droppedHardwareIds: []
         };
 
-        const trackHardwareId = (rawId: string | undefined | null, outcome: 'synced' | 'failed') => {
+        const trackHardwareId = (rawId: string | undefined | null, outcome: 'synced' | 'failed' | 'dropped') => {
             if (!rawId || rawId === 'none') return;
-            (outcome === 'synced' ? results.syncedHardwareIds : results.failedHardwareIds).push(rawId);
+            if (outcome === 'failed') {
+                results.failedHardwareIds.push(rawId);
+            } else {
+                results.syncedHardwareIds.push(rawId);
+                if (outcome === 'dropped') results.droppedHardwareIds.push(rawId);
+            }
         };
+        noNumberHardwareIds.forEach(id => trackHardwareId(id, 'dropped'));
 
         for (const call of uniqueCalls) {
             const { phoneNumber, duration, callType, timestamp, hardwareId: rawHardwareId, callSessionId, hardwareDuration } = call;
             const hardwareId = (rawHardwareId && rawHardwareId !== 'none' && !rawHardwareId.includes('_')) ? `${user.id}_${rawHardwareId}` : rawHardwareId;
             if (!phoneNumber) {
                 results.skipped++;
-                trackHardwareId(rawHardwareId, 'failed');
+                trackHardwareId(rawHardwareId, 'dropped');
                 continue;
             }
 
@@ -891,7 +939,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
 
                 if (last10.length === 0) {
                     results.skipped++;
-                    trackHardwareId(rawHardwareId, 'failed');
+                    trackHardwareId(rawHardwareId, 'dropped');
                     continue;
                 }
 
@@ -906,7 +954,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                 if (!entity && !canSyncUnknown && !isMissed) {
                     // Not a CRM number and sync disabled — skip silently
                     results.skipped++;
-                    trackHardwareId(rawHardwareId, 'failed');
+                    trackHardwareId(rawHardwareId, 'dropped');
                     continue;
                 }
 
@@ -1038,7 +1086,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                         const incomingIdentifiers = ['1', 'INCOMING', 'IN', 'INB'];
                         const outgoingIdentifiers = ['2', 'OUTGOING', 'OUT', 'OUTB'];
                         const missedIdentifiers = ['3', 'MISSED', 'MISS'];
-                        const rejectedIdentifiers = ['5', 'REJECTED', 'REJ'];
+                        const rejectedIdentifiers = ['5', 'REJECTED', 'REJ', '6', 'BLOCKED'];
 
                         if (outgoingIdentifiers.includes(rawType)) {
                             direction = 'outbound';
@@ -1138,7 +1186,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                 const incomingIdentifiers = ['1', 'INCOMING', 'IN', 'INB'];
                 const outgoingIdentifiers = ['2', 'OUTGOING', 'OUT', 'OUTB'];
                 const missedIdentifiers = ['3', 'MISSED', 'MISS'];
-                const rejectedIdentifiers = ['5', 'REJECTED', 'REJ'];
+                const rejectedIdentifiers = ['5', 'REJECTED', 'REJ', '6', 'BLOCKED'];
 
                 durationSecs = parseInt(duration, 10) || 0;
                 const carrierDurationSecs = hardwareDuration ? parseInt(hardwareDuration, 10) : null;
@@ -1393,7 +1441,8 @@ export const syncCallLogs = async (req: Request, res: Response) => {
             // assuming "all of them" from this being a 200. See Dad-call-recorder's
             // BackendApi.bulkSync/CallSyncWorker.
             syncedHardwareIds: results.syncedHardwareIds,
-            failedHardwareIds: results.failedHardwareIds
+            failedHardwareIds: results.failedHardwareIds,
+            droppedHardwareIds: results.droppedHardwareIds
         });
     } catch (error) {
         console.error('[BulkSync] CRITICAL ERROR:', error);
