@@ -2,26 +2,62 @@ import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { synchronizeDurations, resolveBestDurationSeconds, formatCallDurationDescription, normalizeDuration, getAudioDuration, transcodeToPlayableAudio } from '../utils/callUtils';
 
-// In-memory locks to serialize concurrent call uploads and prevent parallel race condition duplicates
-const activeSyncLocks = new Set<string>();
+// DB-backed, NOT in-memory: this backend runs as multiple PM2-clustered
+// processes (see cronService.ts's own NODE_APP_INSTANCE guard, and the
+// bulk-sync rate limiter in androidRoutes.ts, added for the exact same
+// reason). An in-memory Set only serializes requests that happen to land
+// on the SAME worker process — the load balancer round-robins requests
+// across workers, so the real-time Tier 0 upload (uploadCallRecording) and
+// a reconciler/bulk-sync fallback for the SAME call (syncCallLogs) can
+// land on two different processes, each with its own empty Set, each
+// seeing "no existing row" and both inserting — a real, confirmed cause of
+// duplicate Interaction rows for one call (one with a recording attached,
+// one without), diagnosed directly from production data. Uses the same
+// atomic INSERT ... ON CONFLICT ... WHERE pattern as that rate limiter, on
+// the same SystemSetting table, under a distinctly-namespaced key so the
+// two lock/rate-limit purposes never collide with each other.
+const LOCK_STALE_MS = 10_000; // a lock older than this is treated as abandoned (e.g. a crashed request that never released it) and reclaimable, so this can never wedge a key locked forever.
+const lockSettingKey = (key: string) => `android_sync_lock:${key}`;
 
 const acquireLock = async (key: string, maxWaitMs = 5000): Promise<boolean> => {
     const start = Date.now();
-    while (activeSyncLocks.has(key)) {
+    while (true) {
+        try {
+            const claimed = await prisma.$queryRaw<{ id: string }[]>`
+                INSERT INTO "SystemSetting" (id, key, value, "group", "createdAt", "updatedAt")
+                VALUES (${randomUUID()}, ${lockSettingKey(key)}, ${String(Date.now())}, 'android_sync_lock', now(), now())
+                ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, "updatedAt" = now()
+                    WHERE (EXTRACT(EPOCH FROM (now() - "SystemSetting"."updatedAt")) * 1000) >= ${LOCK_STALE_MS}
+                RETURNING id
+            `;
+            if (claimed.length > 0) return true;
+        } catch (err) {
+            // Fail OPEN, not closed — a broken lock mechanism must never
+            // block a legitimate upload forever. Worst case on a query
+            // failure is reverting to the old (rare) race, not an outage.
+            console.error(`[AndroidLock] acquireLock query failed for key ${key}, proceeding without the lock`, err);
+            return true;
+        }
         if (Date.now() - start > maxWaitMs) {
             console.warn(`[AndroidLock] Timeout waiting for lock key: ${key}`);
             return false; // Timeout
         }
         await new Promise(resolve => setTimeout(resolve, 50));
     }
-    activeSyncLocks.add(key);
-    return true;
 };
 
-const releaseLock = (key: string) => {
-    activeSyncLocks.delete(key);
+const releaseLock = async (key: string) => {
+    try {
+        await prisma.systemSetting.deleteMany({ where: { key: lockSettingKey(key) } });
+    } catch (err) {
+        // Best-effort — a failed release just means this key self-expires
+        // after LOCK_STALE_MS instead of being freed immediately.
+        console.error(`[AndroidLock] releaseLock failed for key ${key} (will self-expire)`, err);
+    }
 };
 
 // GET /api/android/leads
@@ -689,7 +725,7 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
         res.status(201).json({ message: 'Recording and Interaction uploaded successfully', recording });
         } finally {
             if (lockKey) {
-                releaseLock(lockKey);
+                await releaseLock(lockKey);
             }
         }
     } catch (error) {
@@ -1306,7 +1342,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                 }
             } finally {
                 if (lockKey) {
-                    releaseLock(lockKey);
+                    await releaseLock(lockKey);
                 }
             }
         }
