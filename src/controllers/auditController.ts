@@ -110,7 +110,18 @@ export const getAuditLogs = async (req: Request, res: Response) => {
 
         const total = await prisma.auditLog.count({ where });
 
+        // Summary counts for the same filtered `where` (ignoring pagination) -
+        // powers the stat tiles row. Cheap: each is an indexed count, not a
+        // full scan (organisationId/action/createdAt are all indexed).
+        const [creates, updates, deletes, logins] = await Promise.all([
+            prisma.auditLog.count({ where: { ...where, action: { startsWith: 'CREATE' } } }),
+            prisma.auditLog.count({ where: { ...where, action: { startsWith: 'UPDATE' } } }),
+            prisma.auditLog.count({ where: { ...where, action: { startsWith: 'DELETE' } } }),
+            prisma.auditLog.count({ where: { ...where, action: 'LOGIN' } }),
+        ]);
+
         res.json({
+            summary: { total, creates, updates, deletes, logins },
             logs,
             pagination: {
                 total,
