@@ -1200,7 +1200,7 @@ export const deleteLead = async (req: express.Request, res: express.Response) =>
 
 export const createBulkLeads = async (req: express.Request, res: express.Response) => {
     try {
-        const { leads, assignmentRuleId, applyAssignmentRules, splitUserIds } = req.body;
+        const { leads, assignmentRuleId, applyAssignmentRules, splitUserIds, splitStartIndex } = req.body;
         const user = (req as any).user;
 
         // Support both direct array (legacy) and object with options
@@ -1208,7 +1208,14 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
         const ruleId = Array.isArray(req.body) ? undefined : assignmentRuleId;
         const applyRules = Array.isArray(req.body) ? true : (applyAssignmentRules !== false); // Default to true if not explicitly false
         const splitIds = Array.isArray(req.body) ? [] : (splitUserIds || []);
-        let splitIndex = 0;
+        // The web importer sends a large file as several smaller batches (one
+        // huge request blew past the client/proxy timeout and kept importing
+        // server-side after the browser had already shown an error). It passes
+        // back the `nextSplitIndex` from the previous batch so the round-robin
+        // split carries on across batches instead of restarting at user #1
+        // every batch.
+        const parsedSplitStart = Number(splitStartIndex);
+        let splitIndex = Number.isInteger(parsedSplitStart) && parsedSplitStart >= 0 ? parsedSplitStart : 0;
 
         console.log('[createBulkLeads] Received:', leadsData?.length || 0, 'leads', 'RuleID:', ruleId, 'SplitIds:', splitIds);
 
@@ -1231,6 +1238,10 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
             select: { id: true, email: true }
         });
         const userEmailMap = new Map(orgUsers.map(u => [u.email.toLowerCase(), u.id]));
+        // Most rows in a file share the same few owners — look each owner's
+        // branch up once per request instead of once per row.
+        const ownerBranchCache = new Map<string, string | null>();
+        const DuplicateLeadService = (await import('../services/duplicateLeadService')).default;
 
         for (const l of leadsData) {
             try {
@@ -1254,11 +1265,15 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
 
                 // If specific user resolved, sync branch with them
                 if (targetOwnerId) {
-                    const assignedUser = await prisma.user.findUnique({
-                        where: { id: targetOwnerId },
-                        select: { branchId: true }
-                    });
-                    if (assignedUser?.branchId) explicitBranchId = explicitBranchId || assignedUser.branchId;
+                    if (!ownerBranchCache.has(targetOwnerId)) {
+                        const assignedUser = await prisma.user.findUnique({
+                            where: { id: targetOwnerId },
+                            select: { branchId: true }
+                        });
+                        ownerBranchCache.set(targetOwnerId, assignedUser?.branchId || null);
+                    }
+                    const ownerBranchId = ownerBranchCache.get(targetOwnerId);
+                    if (ownerBranchId) explicitBranchId = explicitBranchId || ownerBranchId;
                 }
 
                 let targetBranchId = explicitBranchId || user.branchId;
@@ -1269,7 +1284,6 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                 // different source label or branch guess) it just lets the same person get
                 // re-created once per branch/source combination. See handleReEnquiry below
                 // for how a genuinely-different branch on the row is still respected.
-                const DuplicateLeadService = (await import('../services/duplicateLeadService')).default;
                 const duplicateCheck = await DuplicateLeadService.checkDuplicate(
                     cleanPhone,
                     l.email,
@@ -1458,7 +1472,8 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
             created: createdCount,
             reEnquiries: reEnquiryCount,
             duplicates: duplicateCount,
-            errors: errors.length > 0 ? errors : undefined
+            errors: errors.length > 0 ? errors : undefined,
+            nextSplitIndex: splitIndex
         });
     } catch (error) {
         res.status(500).json({ message: (error as Error).message });
