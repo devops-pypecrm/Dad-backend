@@ -22,10 +22,10 @@ export const getWebForms = async (req: Request, res: Response) => {
                     organisationId: orgId,
                     source: 'website',
                     isDeleted: false,
-                    sourceDetails: {
-                        path: ['webFormId'],
-                        equals: form.id
-                    }
+                    OR: [
+                        { customFields: { path: ['webFormId'], equals: form.id } },
+                        { sourceDetails: { path: ['webFormId'], equals: form.id } }
+                    ]
                 }
             });
             return {
@@ -78,6 +78,91 @@ export const deleteWebForm = async (req: Request, res: Response) => {
             data: { isDeleted: true }
         });
         res.json({ message: 'WebForm deleted' });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+/**
+ * Lists the leads captured by a given web form, org-scoped.
+ * GET /api/web-forms/:id/submissions
+ */
+export const getWebFormSubmissions = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(400).json({ message: 'No org' });
+
+        const { id } = req.params;
+        const page = Number(req.query.page) || 1;
+        const limit = Number(req.query.limit) || 20;
+
+        const webForm = await prisma.webForm.findFirst({
+            where: { id, organisationId: orgId, isDeleted: false }
+        });
+        if (!webForm) return res.status(404).json({ message: 'Form not found' });
+
+        const where = {
+            organisationId: orgId,
+            source: 'website' as const,
+            isDeleted: false,
+            OR: [
+                { customFields: { path: ['webFormId'], equals: id } },
+                { sourceDetails: { path: ['webFormId'], equals: id } }
+            ] as any
+        };
+
+        const [submissions, total] = await Promise.all([
+            prisma.lead.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: (page - 1) * limit,
+                take: limit,
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    email: true,
+                    phone: true,
+                    company: true,
+                    customFields: true,
+                    createdAt: true,
+                    isReEnquiry: true
+                }
+            }),
+            prisma.lead.count({ where })
+        ]);
+
+        res.json({
+            form: { id: webForm.id, name: webForm.name, fields: webForm.fields },
+            submissions,
+            pagination: { total, page, limit, pages: Math.ceil(total / limit) }
+        });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+/**
+ * Public, unauthenticated: returns the safe-to-render definition of an active form.
+ * GET /api/public/webforms/:id
+ */
+export const getPublicWebForm = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const webForm = await prisma.webForm.findUnique({ where: { id, isDeleted: false } });
+        if (!webForm || !webForm.isActive) {
+            return res.status(404).json({ message: 'Form not found or inactive' });
+        }
+        res.json({
+            id: webForm.id,
+            name: webForm.name,
+            description: webForm.description,
+            fields: webForm.fields,
+            submitAction: webForm.submitAction,
+            submitMessage: webForm.submitMessage,
+            redirectUrl: webForm.redirectUrl
+        });
     } catch (error) {
         res.status(500).json({ message: (error as Error).message });
     }

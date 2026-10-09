@@ -1,7 +1,7 @@
 
 import express from 'express';
 import crypto from 'crypto';
-import { submitWebForm } from '../controllers/webFormController';
+import { submitWebForm, getPublicWebForm } from '../controllers/webFormController';
 import { MetaIntegrationService } from '../services/metaIntegrationService';
 import { getPublicFAQs } from '../controllers/siteFAQController';
 import { getPublicTrainingVideos } from '../controllers/trainingVideoController';
@@ -22,6 +22,12 @@ router.get('/health', (req, res) => res.status(200).send('OK'));
  * @desc Submit a web form to create a lead
  */
 router.post('/webforms/:id/submit', submitWebForm);
+
+/**
+ * @route GET /api/public/webforms/:id
+ * @desc Safe, public definition of an active form (fields/labels only) used to render it
+ */
+router.get('/webforms/:id', getPublicWebForm);
 
 /**
  * @route POST /api/public/enquiries
