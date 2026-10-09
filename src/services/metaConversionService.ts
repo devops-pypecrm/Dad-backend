@@ -81,7 +81,12 @@ export const MetaConversionService = {
             const data = events.map(evt => {
                 const userData: any = {
                     em: evt.userData.email ? [hash(evt.userData.email)] : undefined,
-                    ph: evt.userData.phone ? [hash(evt.userData.phone)] : undefined,
+                    // Meta requires `ph` to be digits-only (country code included, no leading
+                    // '+', spaces, dashes or parentheses) before hashing - hashing the raw
+                    // stored value (which may contain "+91 98765 43210" etc.) produces a hash
+                    // that never matches Meta's own normalized hash of the same number,
+                    // silently tanking match quality (EMQ) without ever erroring.
+                    ph: evt.userData.phone ? [hash(normalizePhone(evt.userData.phone))] : undefined,
                     fn: evt.userData.firstName ? [hash(evt.userData.firstName)] : undefined,
                     ln: evt.userData.lastName ? [hash(evt.userData.lastName)] : undefined,
                     external_id: evt.userData.externalId ? [hash(evt.userData.externalId)] : undefined,
@@ -100,7 +105,10 @@ export const MetaConversionService = {
                         lead_event_source: 'PypeCRM',
                         ...evt.customData
                     },
-                    event_source_url: evt.eventSourceUrl
+                    event_source_url: evt.eventSourceUrl,
+                    // Lets Meta dedup if the same status-change event is ever sent twice
+                    // (e.g. a retried request) rather than double-counting it.
+                    event_id: evt.userData.externalId ? `${evt.userData.externalId}-${evt.eventName}` : undefined,
                 };
             });
 
@@ -135,4 +143,10 @@ function hash(value: string): string {
     }
 
     return crypto.createHash('sha256').update(trimmed).digest('hex');
+}
+
+// Per Meta's CAPI docs, phone numbers must be stripped to digits-only (with country
+// code, no leading '+' / 0 / spaces / dashes) before hashing.
+function normalizePhone(phone: string): string {
+    return phone.replace(/[^0-9]/g, '');
 }
