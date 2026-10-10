@@ -1,6 +1,6 @@
 import prisma from '../config/prisma';
 import { getIO } from '../socket';
-import { WhatsAppService } from './whatsAppService';
+import { WhatsAppSender } from './whatsAppSender';
 import { WhatsAppAssignmentService } from './whatsAppAssignmentService';
 import { NotificationService } from './notificationService';
 
@@ -213,70 +213,47 @@ export const WhatsAppFlowEngine = {
      * `condition` nodes so the caller can route to the matching outgoing edge.
      */
     async executeNode(node: FlowNode, session: { phoneNumber: string; organisationId: string; whatsappAccountId: string | null; leadId?: string | null; variables?: any }, flowId: string): Promise<string | null | undefined> {
-        const waClient = await WhatsAppService.getClientForOrg(session.organisationId);
-
-        const logOutgoing = async (content: any, messageType: string) => {
-            await prisma.whatsAppMessage.create({
-                data: {
-                    conversationId: `${session.phoneNumber}_${session.organisationId}`,
-                    phoneNumber: session.phoneNumber,
-                    direction: 'outgoing',
-                    messageType,
-                    content,
-                    status: 'sent',
-                    sentAt: new Date(),
-                    organisationId: session.organisationId,
-                    leadId: session.leadId || undefined,
-                    whatsappAccountId: session.whatsappAccountId || undefined,
-                    isReadByAgent: true
-                }
+        // All flow messages go through the central sender so they are logged against the
+        // conversation (inbox), respect opt-outs and the 24h window, and use the right number.
+        const send = (payload: { text?: string; media?: any; interactive?: any }) =>
+            WhatsAppSender.send({
+                organisationId: session.organisationId,
+                to: session.phoneNumber,
+                accountId: session.whatsappAccountId,
+                leadId: session.leadId,
+                source: 'flow',
+                ...payload
             });
-        };
 
         try {
             switch (node.type) {
                 case 'message': {
                     const text = node.data?.message || '';
-                    if (waClient && text) {
-                        await waClient.sendTextMessage(session.phoneNumber, text);
-                        await logOutgoing({ text }, 'text');
-                    }
+                    if (text) await send({ text });
                     break;
                 }
                 case 'buttons': {
                     const text = node.data?.message || '';
                     const buttons = (node.data?.buttons || []) as { id: string; title: string }[];
-                    if (waClient && text && buttons.length > 0) {
-                        await waClient.sendInteractiveButtonsMessage(session.phoneNumber, text, buttons);
-                        await logOutgoing({ text, buttons }, 'interactive');
-                    }
+                    if (text && buttons.length > 0) await send({ interactive: { kind: 'buttons', body: text, buttons } });
                     break;
                 }
                 case 'list': {
                     const text = node.data?.message || '';
                     const buttonText = node.data?.buttonText || 'Choose';
                     const sections = node.data?.sections || [];
-                    if (waClient && text && sections.length > 0) {
-                        await waClient.sendInteractiveListMessage(session.phoneNumber, text, buttonText, sections);
-                        await logOutgoing({ text, sections }, 'interactive');
-                    }
+                    if (text && sections.length > 0) await send({ interactive: { kind: 'list', body: text, buttonText, sections } });
                     break;
                 }
                 case 'media': {
                     const mediaId = node.data?.mediaId;
                     const mediaType = node.data?.mediaType || 'image';
-                    if (waClient && mediaId) {
-                        await waClient.sendMediaMessage(session.phoneNumber, mediaType, mediaId, node.data?.caption);
-                        await logOutgoing({ mediaId, mediaType, caption: node.data?.caption }, mediaType);
-                    }
+                    if (mediaId) await send({ media: { type: mediaType, mediaId, caption: node.data?.caption } });
                     break;
                 }
                 case 'form_input': {
                     const text = node.data?.message || '';
-                    if (waClient && text) {
-                        await waClient.sendTextMessage(session.phoneNumber, text);
-                        await logOutgoing({ text }, 'text');
-                    }
+                    if (text) await send({ text });
                     break;
                 }
                 case 'condition': {
@@ -307,10 +284,12 @@ export const WhatsAppFlowEngine = {
                             'info'
                         );
                     }
-                    if (waClient) {
-                        const closing = node.data?.message || "Please wait, we're connecting you with an agent.";
-                        await waClient.sendTextMessage(session.phoneNumber, closing);
-                        await logOutgoing({ text: closing }, 'text');
+                    const closing = node.data?.message || "Please wait, we're connecting you with an agent.";
+                    await send({ text: closing });
+                    // hand the conversation to a human: bots stay quiet and it shows as pending in the inbox
+                    const convo = await prisma.whatsAppConversation.findFirst({ where: { organisationId: session.organisationId, phoneNumber: session.phoneNumber.replace(/\D/g, ''), accountKey: session.whatsappAccountId || 'default' } });
+                    if (convo) {
+                        await prisma.whatsAppConversation.update({ where: { id: convo.id }, data: { status: 'pending', botPausedUntil: new Date(Date.now() + 24 * 60 * 60_000), ...(agentId && !convo.assigneeId ? { assigneeId: agentId } : {}) } });
                     }
                     break;
                 }

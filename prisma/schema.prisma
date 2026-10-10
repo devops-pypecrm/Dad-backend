@@ -83,6 +83,14 @@ model Organisation {
   whatsAppAccounts        WhatsAppAccount[]
   whatsAppAssignmentRules WhatsAppAssignmentRule[]
   whatsAppFlows           WhatsAppFlow[]
+  whatsAppConversations   WhatsAppConversation[]
+  whatsAppTemplates       WhatsAppTemplate[]
+  whatsAppQuickReplies    WhatsAppQuickReply[]
+  whatsAppLabels          WhatsAppLabel[]
+  whatsAppAutoResponders  WhatsAppAutoResponder[]
+  whatsAppNurtureSequences WhatsAppNurtureSequence[]
+  whatsAppOptOuts         WhatsAppOptOut[]
+  whatsAppAIAgent         WhatsAppAIAgent?
   commissions             Commission[]
   landingPages            LandingPage[]
   auditLogs               AuditLog[]
@@ -1640,6 +1648,10 @@ model WhatsAppCampaign {
 
   whatsappAccountId String?
   flowId            String? // Flow to start when a recipient replies to this campaign (reply-routing)
+  templateLanguage  String?
+  templateParams    Json? // [{ source: 'static' | 'lead.firstName' | ..., value?: string }] per body variable, in order
+  audienceFilter    Json? // saved lead filter used to build recipients at send time
+  audienceCount     Int?
 
   organisation    Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   createdBy       User?             @relation("WhatsAppCampaignCreator", fields: [createdById], references: [id])
@@ -1672,6 +1684,7 @@ model WhatsAppMessage {
   campaignId        String?
   whatsappAccountId String?
   isReadByAgent     Boolean   @default(true)
+  source            String? // customer | agent | flow | ai | auto_responder | nurture | campaign
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   isDeleted         Boolean   @default(false)
@@ -1708,6 +1721,17 @@ model WhatsAppAccount {
   updatedAt      DateTime @updatedAt
   isDeleted      Boolean  @default(false)
 
+  // Health / compliance metadata (refreshed by the WhatsApp health check)
+  businessId          String?
+  connectionType      String    @default("oauth") // oauth | embedded_signup | manual
+  qualityRating       String? // GREEN | YELLOW | RED
+  messagingTier       String? // TIER_250 | TIER_1K | TIER_10K | TIER_100K | TIER_UNLIMITED
+  webhookSubscribedAt DateTime?
+  lastWebhookAt       DateTime?
+  tokenExpiresAt      DateTime?
+  healthCheckedAt     DateTime?
+  lastError           String?
+
   organisation    Organisation             @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   createdBy       User?                    @relation("WhatsAppAccountCreator", fields: [createdById], references: [id])
   assignmentRules WhatsAppAssignmentRule[]
@@ -1716,6 +1740,7 @@ model WhatsAppAccount {
   flows           WhatsAppFlow[]
 
   @@index([organisationId])
+  @@index([phoneNumberId])
 }
 
 model WhatsAppAssignmentRule {
@@ -1750,6 +1775,8 @@ model WhatsAppFlow {
   isActive          Boolean  @default(false)
   triggerType       String   @default("keyword") // keyword | any_message | manual
   triggerKeywords   String[]
+  category          String?
+  sourceTemplateKey String? // set when cloned from the built-in chatbot library
   nodes             Json
   edges             Json
   createdById       String?
@@ -2139,4 +2166,281 @@ model TrainingVideo {
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+
+// ---------------------------------------------------------------------------
+// WhatsApp hub: inbox, templates, auto-responder, nurturing, AI agent, opt-outs
+// ---------------------------------------------------------------------------
+
+model WhatsAppConversation {
+  id                   String    @id @default(uuid())
+  organisationId       String
+  whatsappAccountId    String?
+  accountKey           String    @default("default") // whatsappAccountId or "default"; makes the unique key null-safe
+  phoneNumber          String // digits only (E.164 without +)
+  displayName          String?
+  leadId               String?
+  contactId            String?
+  assigneeId           String?
+  status               String    @default("open") // open | pending | resolved
+  labels               String[]
+  unreadCount          Int       @default(0)
+  lastMessageAt        DateTime  @default(now())
+  lastMessagePreview   String?
+  lastMessageDirection String?
+  lastInboundAt        DateTime? // start of the 24h customer-service window
+  botPausedUntil       DateTime? // while a human is handling it, bots/AI stay silent
+  isDeleted            Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  organisation Organisation                @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  notes        WhatsAppConversationNote[]
+
+  @@unique([organisationId, accountKey, phoneNumber])
+  @@index([organisationId, status, lastMessageAt])
+  @@index([organisationId, assigneeId])
+  @@index([leadId])
+}
+
+model WhatsAppConversationNote {
+  id             String   @id @default(uuid())
+  conversationId String
+  organisationId String
+  authorId       String
+  body           String
+  createdAt      DateTime @default(now())
+
+  conversation WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model WhatsAppQuickReply {
+  id             String   @id @default(uuid())
+  organisationId String
+  shortcut       String // e.g. "pricing" typed as /pricing
+  body           String
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  isDeleted      Boolean  @default(false)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId])
+}
+
+model WhatsAppLabel {
+  id             String   @id @default(uuid())
+  organisationId String
+  name           String
+  color          String   @default("#69a63a")
+  createdAt      DateTime @default(now())
+  isDeleted      Boolean  @default(false)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, name])
+}
+
+model WhatsAppTemplate {
+  id                String   @id @default(uuid())
+  organisationId    String
+  whatsappAccountId String?
+  metaTemplateId    String?
+  name              String
+  language          String
+  category          String // MARKETING | UTILITY | AUTHENTICATION
+  status            String // APPROVED | PENDING | REJECTED | PAUSED | DISABLED | IN_APPEAL
+  rejectedReason    String?
+  components        Json
+  syncedAt          DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  isDeleted         Boolean  @default(false)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, name, language])
+  @@index([organisationId, status])
+}
+
+model WhatsAppOptOut {
+  id             String   @id @default(uuid())
+  organisationId String
+  phoneNumber    String // digits only
+  reason         String   @default("keyword") // keyword | manual
+  createdAt      DateTime @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, phoneNumber])
+}
+
+model WhatsAppAutoResponder {
+  id                   String    @id @default(uuid())
+  organisationId       String
+  whatsappAccountId    String?
+  name                 String
+  isActive             Boolean   @default(false)
+  templateName         String
+  templateLanguage     String    @default("en_US")
+  templateParams       Json? // [{ source: 'static' | 'lead.firstName' | 'lead.lastName' | 'lead.source' | 'org.name', value?: string }]
+  delayMinutes         Int       @default(0)
+  sources              String[] // lead sources to respond to; empty = all
+  workingHoursEnabled  Boolean   @default(false)
+  workingHours         Json? // { mon: { start: '09:00', end: '18:00' } | null, ... }
+  timezone             String    @default("Asia/Kolkata")
+  outsideHoursBehavior String    @default("wait") // wait | skip
+  activatedAt          DateTime? // only leads created after this are answered
+  createdById          String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  isDeleted            Boolean   @default(false)
+
+  organisation Organisation               @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  logs         WhatsAppAutoResponderLog[]
+
+  @@index([organisationId, isActive])
+}
+
+model WhatsAppAutoResponderLog {
+  id           String    @id @default(uuid())
+  responderId  String
+  leadId       String
+  phoneNumber  String
+  status       String    @default("scheduled") // scheduled | sent | skipped | failed
+  scheduledFor DateTime  @default(now())
+  sentAt       DateTime?
+  error        String?
+  createdAt    DateTime  @default(now())
+
+  responder WhatsAppAutoResponder @relation(fields: [responderId], references: [id], onDelete: Cascade)
+
+  @@unique([responderId, leadId])
+  @@index([status, scheduledFor])
+}
+
+model WhatsAppNurtureSequence {
+  id                String    @id @default(uuid())
+  organisationId    String
+  whatsappAccountId String?
+  name              String
+  isActive          Boolean   @default(false)
+  sources           String[] // lead sources to enrol; empty = all
+  stopOnReply       Boolean   @default(true)
+  activatedAt       DateTime? // only leads created after this are enrolled
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  isDeleted         Boolean   @default(false)
+
+  organisation Organisation                 @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  steps        WhatsAppNurtureStep[]
+  enrollments  WhatsAppNurtureEnrollment[]
+
+  @@index([organisationId, isActive])
+}
+
+model WhatsAppNurtureStep {
+  id               String  @id @default(uuid())
+  sequenceId       String
+  position         Int
+  label            String?
+  delayMinutes     Int // wait this long after the previous step (or enrolment) before sending
+  templateName     String
+  templateLanguage String  @default("en_US")
+  templateParams   Json?
+
+  sequence WhatsAppNurtureSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  @@index([sequenceId, position])
+}
+
+model WhatsAppNurtureEnrollment {
+  id             String    @id @default(uuid())
+  sequenceId     String
+  organisationId String
+  leadId         String?
+  phoneNumber    String
+  status         String    @default("active") // active | completed | replied | opted_out | failed | cancelled
+  stepsSent      Int       @default(0)
+  nextRunAt      DateTime?
+  lastSentAt     DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  sequence WhatsAppNurtureSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  @@unique([sequenceId, phoneNumber])
+  @@index([status, nextRunAt])
+  @@index([organisationId, phoneNumber])
+}
+
+model WhatsAppAIAgent {
+  id                String   @id @default(uuid())
+  organisationId    String   @unique
+  isEnabled         Boolean  @default(false)
+  whatsappAccountId String? // null = answers on every connected number
+  chatbotName       String   @default("AI Assistant")
+  showFooter        Boolean  @default(true)
+  footerText        String   @default("Powered by AI")
+  tone              String   @default("friendly") // friendly | professional | concise
+  handoffMessage    String   @default("Let me connect you with a team member who can help.")
+  monthlyLimit      Int      @default(1000)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+}
+
+model WhatsAppKnowledgeSection {
+  id             String   @id @default(uuid())
+  organisationId String
+  category       String // about | services | pricing | timings | location | booking | policies | payments | faqs | other
+  content        String
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
+
+  @@unique([organisationId, category])
+}
+
+model WhatsAppKnowledgeDoc {
+  id             String   @id @default(uuid())
+  organisationId String
+  fileName       String
+  mimeType       String?
+  sizeBytes      Int      @default(0)
+  status         String   @default("processing") // processing | ready | failed
+  errorMessage   String?
+  chunkCount     Int      @default(0)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  isDeleted      Boolean  @default(false)
+
+  @@index([organisationId])
+}
+
+model WhatsAppKnowledgeChunk {
+  id             String   @id @default(uuid())
+  organisationId String
+  sourceType     String // section | doc
+  sourceId       String // section category or doc id
+  content        String
+  createdAt      DateTime @default(now())
+
+  @@index([organisationId, sourceType, sourceId])
+}
+
+model WhatsAppAIUsage {
+  id             String   @id @default(uuid())
+  organisationId String
+  month          String // YYYY-MM
+  count          Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  @@unique([organisationId, month])
 }

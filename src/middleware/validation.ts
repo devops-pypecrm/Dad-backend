@@ -164,6 +164,12 @@ export const whatsappTemplateSchema = Joi.object({
                 then: Joi.string().max(1024).optional(),
                 otherwise: Joi.forbidden()
             }),
+            // Meta rejects templates with {{n}} variables unless sample values are supplied
+            example: Joi.object().when('type', {
+                is: Joi.valid('HEADER', 'BODY'),
+                then: Joi.object().optional(),
+                otherwise: Joi.forbidden()
+            }),
             buttons: Joi.array().when('type', {
                 is: 'BUTTONS',
                 then: Joi.array().items(
@@ -175,6 +181,7 @@ export const whatsappTemplateSchema = Joi.object({
                             then: Joi.required(),
                             otherwise: Joi.forbidden()
                         }),
+                        example: Joi.array().items(Joi.string()).optional(),
                         phone_number: Joi.string().when('type', {
                             is: 'PHONE_NUMBER',
                             then: Joi.required(),

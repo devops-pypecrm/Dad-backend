@@ -14,6 +14,20 @@ export const WhatsAppIntegrationService = {
                 for (const entry of payload.entry) {
                     if (entry.changes) {
                         for (const change of entry.changes) {
+                            if (change.field === 'message_template_status_update') {
+                                const { WhatsAppTemplateService } = await import('./whatsAppTemplateService');
+                                await WhatsAppTemplateService.handleStatusWebhook(String(entry.id), change.value);
+                            }
+
+                            if (change.field === 'phone_number_quality_update' || change.field === 'account_update') {
+                                const { WhatsAppHealthService } = await import('./whatsAppHealthService');
+                                const phoneId = change.value?.phone_number_id;
+                                const acct = phoneId
+                                    ? await prisma.whatsAppAccount.findFirst({ where: { phoneNumberId: phoneId, isDeleted: false } })
+                                    : await prisma.whatsAppAccount.findFirst({ where: { wabaId: String(entry.id), isDeleted: false } });
+                                if (acct) await WhatsAppHealthService.checkAccount(acct.id).catch(() => undefined);
+                            }
+
                             if (change.field === 'messages') {
                                 const value = change.value;
 
@@ -102,24 +116,31 @@ export const WhatsAppIntegrationService = {
     async processMetaMessage(value: any, message: any) {
         const { metadata, contacts } = value;
         
-        // Find organisation - checks the legacy single-number fields plus the
-        // whatsappAccounts array, so an org with multiple connected numbers routes
-        // each inbound message to the right org regardless of which of its numbers
-        // received it.
-        const orgs = await prisma.organisation.findMany({
-            select: { id: true, integrations: true }
-        }).then(orgs => {
-            return orgs.filter(org => {
-                const integrations = org.integrations as any;
-                const accounts: any[] = Array.isArray(integrations?.whatsappAccounts) ? integrations.whatsappAccounts : [];
-                return (integrations?.whatsapp?.phoneNumberId === metadata.phone_number_id) ||
-                    (integrations?.meta?.phoneNumberId === metadata.phone_number_id) ||
-                    accounts.some((a: any) => a.phoneNumberId === metadata.phone_number_id);
-            });
+        // Find the organisation that owns the receiving number: the relational
+        // WhatsAppAccount table first, then the legacy Organisation.integrations JSON
+        // (single-number config / whatsappAccounts array) for older connections.
+        let account = await prisma.whatsAppAccount.findFirst({
+            where: { phoneNumberId: metadata.phone_number_id, isDeleted: false }
         });
+        let org: { id: string } | undefined = account ? { id: account.organisationId } : undefined;
 
-        if (orgs.length === 0) return;
-        const org = orgs[0];
+        if (!org) {
+            const orgs = await prisma.organisation.findMany({ select: { id: true, integrations: true } }).then(all =>
+                all.filter(o => {
+                    const integrations = o.integrations as any;
+                    const accounts: any[] = Array.isArray(integrations?.whatsappAccounts) ? integrations.whatsappAccounts : [];
+                    return (integrations?.whatsapp?.phoneNumberId === metadata.phone_number_id) ||
+                        (integrations?.meta?.phoneNumberId === metadata.phone_number_id) ||
+                        accounts.some((a: any) => a.phoneNumberId === metadata.phone_number_id);
+                })
+            );
+            org = orgs[0];
+        }
+        if (!org) return;
+
+        if (account) {
+            prisma.whatsAppAccount.update({ where: { id: account.id }, data: { lastWebhookAt: new Date() } }).catch(() => undefined);
+        }
 
         const contact = contacts?.find((c: any) => c.wa_id === message.from);
         
@@ -129,12 +150,15 @@ export const WhatsAppIntegrationService = {
         // keyword-automation engine and the inbox UI.
         const interactiveReply = message.interactive?.button_reply || message.interactive?.list_reply;
 
+        // Quick-reply buttons on a template arrive as type "button"
+        const templateButton = message.button;
+
         const normalizedMessage = {
             from: message.from,
             id: message.id,
             timestamp: parseInt(message.timestamp),
-            type: message.text ? 'text' : (interactiveReply ? 'interactive' : (message.image ? 'image' : (message.document ? 'document' : 'unknown'))),
-            body: message.text?.body || interactiveReply?.title || '',
+            type: message.text ? 'text' : ((interactiveReply || templateButton) ? 'interactive' : (message.image ? 'image' : (message.document ? 'document' : (message.audio ? 'audio' : (message.video ? 'video' : (message.location ? 'location' : (message.sticker ? 'image' : 'unknown'))))))),
+            body: message.text?.body || interactiveReply?.title || templateButton?.text || '',
             interactiveReplyId: interactiveReply?.id,
             senderName: contact?.profile?.name || message.from,
             // Meta specific content expansion
@@ -145,9 +169,11 @@ export const WhatsAppIntegrationService = {
             metaLocation: message.location
         };
 
-        const account = await prisma.whatsAppAccount.findFirst({
-            where: { organisationId: org.id, phoneNumberId: metadata.phone_number_id, isDeleted: false }
-        });
+        if (!account) {
+            account = await prisma.whatsAppAccount.findFirst({
+                where: { organisationId: org.id, phoneNumberId: metadata.phone_number_id, isDeleted: false }
+            });
+        }
 
         await this.saveIncomingMessage(org.id, normalizedMessage, 'meta', account?.id);
     },
@@ -190,7 +216,19 @@ export const WhatsAppIntegrationService = {
                     content.fileName = message.metaDoc.filename;
                     content.caption = message.metaDoc.caption;
                 }
-                // ... add other Meta types if needed
+                else if (message.metaAudio) {
+                    messageType = 'audio';
+                    content.mediaUrl = message.metaAudio.id;
+                } else if (message.metaVideo) {
+                    messageType = 'video';
+                    content.mediaUrl = message.metaVideo.id;
+                    content.caption = message.metaVideo.caption;
+                } else if (message.metaLocation) {
+                    messageType = 'location';
+                    content.latitude = message.metaLocation.latitude;
+                    content.longitude = message.metaLocation.longitude;
+                    content.text = message.metaLocation.name || message.metaLocation.address || 'Shared a location';
+                }
             }
 
             // Try to find an existing Lead anywhere in the org (not branch-scoped -
@@ -218,13 +256,14 @@ export const WhatsAppIntegrationService = {
             // org (a concurrent duplicate webhook delivery slipped past the check
             // above), the DB unique constraint rejects it - treat that as "already
             // handled" and stop, same as the findFirst short-circuit above.
-            let messageRecord;
+            let messageRecord: any;
             try {
                 messageRecord = await prisma.whatsAppMessage.create({
                     data: {
-                        conversationId: `${message.from}_${organisationId}`,
-                        phoneNumber: message.from,
+                        conversationId: `${message.from}_${organisationId}`, // replaced with the conversation row id below
+                        phoneNumber: message.from.replace(/\D/g, ''),
                         direction: 'incoming',
+                        source: 'customer',
                         messageType,
                         content,
                         status: 'delivered',
@@ -333,14 +372,51 @@ export const WhatsAppIntegrationService = {
                 }
             }
 
+            // Re-read: the lead-creation block above may have linked a lead to this message.
+            messageRecord = (await prisma.whatsAppMessage.findUnique({ where: { id: messageRecord.id } })) || messageRecord;
+
+            // Conversation bookkeeping: inbox row, unread count and the 24h window start.
+            const { WhatsAppConversationService, previewFor } = await import('./whatsAppConversationService');
+            const convo = await WhatsAppConversationService.touch({
+                organisationId, whatsappAccountId, phoneNumber: message.from, direction: 'incoming',
+                preview: previewFor(messageType, content), displayName: message.senderName,
+                leadId: messageRecord.leadId, contactId: messageRecord.contactId,
+                at: new Date(message.timestamp * 1000)
+            });
+            messageRecord = await prisma.whatsAppMessage.update({
+                where: { id: messageRecord.id },
+                data: { conversationId: convo.id, leadId: messageRecord.leadId || convo.leadId || undefined }
+            });
+
             // Real-time notification
             const io = getIO();
             if (io) {
                 io.to(`org:${organisationId}`).emit('whatsapp_message_received', {
                     message: messageRecord,
-                    phoneNumber: message.from
+                    phoneNumber: message.from,
+                    conversationId: convo.id
                 });
             }
+
+            // Consent: STOP / START keywords, and any reply cancels running nurture sequences.
+            const { WhatsAppComplianceService } = await import('./whatsAppComplianceService');
+            const { WhatsAppNurtureService } = await import('./whatsAppNurtureService');
+            const keyword = WhatsAppComplianceService.classifyKeyword(message.type === 'text' ? message.body : '');
+            if (keyword === 'out') {
+                await WhatsAppComplianceService.optOut(organisationId, message.from, 'keyword');
+                try {
+                    const { WhatsAppSender } = await import('./whatsAppSender');
+                    await WhatsAppSender.send({ organisationId, to: message.from, accountId: whatsappAccountId, source: 'flow', text: 'You have been unsubscribed and will no longer receive messages from us. Reply START anytime to resume.' });
+                } catch (e) { /* confirmation is best-effort */ }
+                return; // never trigger bots after an opt-out
+            }
+            if (keyword === 'in') {
+                await WhatsAppComplianceService.optIn(organisationId, message.from);
+            }
+            await WhatsAppNurtureService.cancelOnReply(organisationId, message.from).catch(err => console.error('[WhatsAppWebhook] nurture cancel failed', err));
+
+            // A human is already handling this conversation: record only, no bots.
+            if (convo.botPausedUntil && convo.botPausedUntil > new Date()) return;
 
             // Flow builder dispatch takes priority over the simpler keyword
             // automation engine below: a message mid-flow is a reply to that flow,
@@ -374,10 +450,25 @@ export const WhatsAppIntegrationService = {
                 console.error('[WhatsAppWebhook] WhatsAppFlowEngine dispatch failed:', flowError);
             }
 
+            // The AI agent answers anything no flow claimed, but explicit keyword
+            // automations (below) run first when the org has configured any matching one.
+            let handledByAI = false;
+            if (!handledByFlow && message.type === 'text') {
+                try {
+                    const hasKeywordRule = await prisma.workflow.count({ where: { organisationId, isActive: true, isDeleted: false, triggerEntity: 'WhatsAppMessage' } }) > 0;
+                    if (!hasKeywordRule) {
+                        const { WhatsAppAIService } = await import('./whatsAppAIService');
+                        handledByAI = await WhatsAppAIService.handleInbound({ organisationId, whatsappAccountId: whatsappAccountId || null, phoneNumber: message.from, text: message.body, leadId: messageRecord.leadId });
+                    }
+                } catch (aiError) {
+                    console.error('[WhatsAppWebhook] AI agent failed:', aiError);
+                }
+            }
+
             // Fire any WhatsApp automation ("bot") workflows configured for this
             // account/keyword. Additive hook into the existing generic automation
             // engine - failures here must never break message ingestion above.
-            if (!handledByFlow) {
+            if (!handledByFlow && !handledByAI) {
                 try {
                     const { WorkflowEngine } = await import('./workflowEngine');
                     await WorkflowEngine.evaluate('WhatsAppMessage', 'received', {

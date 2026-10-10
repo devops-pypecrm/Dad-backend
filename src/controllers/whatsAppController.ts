@@ -5,6 +5,10 @@ import { GallaboxService } from '../services/gallaboxService';
 import prisma from '../config/prisma';
 import { getOrgId, getVisibleUserIds } from '../utils/hierarchyUtils';
 import { getIO } from '../socket';
+import { resolveWhatsAppCredentials } from '../services/whatsAppCredentials';
+import { WhatsAppSender, WhatsAppSendError } from '../services/whatsAppSender';
+import { WhatsAppTemplateService } from '../services/whatsAppTemplateService';
+import { digitsOnly } from '../utils/whatsappPhone';
 
 // Type extension for Request to include user
 interface AuthRequest extends Request {
@@ -17,155 +21,67 @@ interface AuthRequest extends Request {
 import { decrypt } from '../utils/encryption';
 
 export const getWhatsAppConfig = async (req: AuthRequest) => {
-    if (!req.user?.organisationId) {
-        throw new Error('User not authenticated or missing organisation');
-    }
+    const orgId = getOrgId(req.user);
+    if (!orgId) throw new Error('User not authenticated or missing organisation');
 
-    const org = await prisma.organisation.findUnique({
-        where: { id: req.user.organisationId }
-    });
+    const cred = await resolveWhatsAppCredentials(orgId);
+    if (!cred) throw new Error('WhatsApp integration not configured. Please check settings.');
 
-    if (!org) throw new Error('Organisation not found');
-
-    const integrations = org.integrations as any;
-
-    // Check for dedicated WhatsApp config first
-    let whatsappConfig = integrations?.whatsapp;
-
-    // Fallback to meta config for backward compatibility
-    if (!whatsappConfig?.connected && integrations?.meta?.phoneNumberId) {
-        whatsappConfig = {
-            accessToken: integrations.meta.accessToken,
-            phoneNumberId: integrations.meta.phoneNumberId,
-            wabaId: integrations.meta.wabaId,
-            connected: integrations.meta.connected
-        };
-    }
-
-    if (!whatsappConfig?.connected || !whatsappConfig.phoneNumberId || !whatsappConfig.accessToken) {
-        throw new Error('WhatsApp integration not configured. Please check settings.');
-    }
-
-    // Decrypt the token before using it
-    return {
-        ...whatsappConfig,
-        accessToken: decrypt(whatsappConfig.accessToken)
-    };
+    return { accessToken: cred.accessToken, phoneNumberId: cred.phoneNumberId, wabaId: cred.wabaId, connected: true, accountId: cred.accountId };
 };
 
+/**
+ * Legacy send endpoint (used by lead pages and the bulk-send dialog). Delegates to the
+ * central sender, so the 24h window, opt-outs and approved-template rules apply everywhere.
+ */
 export const sendMessage = async (req: AuthRequest, res: Response) => {
     try {
-        // Validate required fields
-        const { to, message, type = 'text' } = req.body;
+        const { to, message, type = 'text', accountId } = req.body;
+        const orgId = getOrgId(req.user);
+        if (!orgId) return res.status(400).json({ message: 'No organisation found' });
+        if (!to) return res.status(400).json({ message: 'Phone number (to) is required' });
+        if (!/^\+[1-9]\d{1,14}$/.test(to)) return res.status(400).json({ message: 'Phone number must be in international format (+1234567890)' });
+        if (type === 'text' && !message) return res.status(400).json({ message: 'Message text is required for text messages' });
+        if (type === 'template' && !req.body.templateName) return res.status(400).json({ message: 'Template name is required for template messages' });
 
-        if (!to) {
-            return res.status(400).json({ message: 'Phone number (to) is required' });
-        }
+        const sanitizedMessage = message ? String(message).trim().substring(0, 4096) : undefined;
 
-        // Validate phone number format
-        const phoneRegex = /^\+[1-9]\d{1,14}$/;
-        if (!phoneRegex.test(to)) {
-            return res.status(400).json({ message: 'Phone number must be in international format (+1234567890)' });
-        }
+        // Accept either explicit `values` or Cloud-API style `components` (body parameters).
+        const values: string[] = Array.isArray(req.body.values)
+            ? req.body.values.map(String)
+            : ((req.body.components || []).find((c: any) => (c.type || '').toLowerCase() === 'body')?.parameters || []).map((p: any) => String(p.text ?? ''));
 
-        if (type === 'text' && !message) {
-            return res.status(400).json({ message: 'Message text is required for text messages' });
-        }
-
-        if (type === 'template' && !req.body.templateName) {
-            return res.status(400).json({ message: 'Template name is required for template messages' });
-        }
-
-        // Sanitize message content
-        const sanitizedMessage = message ? message.trim().substring(0, 4096) : undefined;
-
-        let result;
-        let waMessageId;
-
-        // Try Meta WhatsApp first
         try {
-            const config = await getWhatsAppConfig(req);
-            const whatsAppService = new WhatsAppService({
-                accessToken: config.accessToken,
-                phoneNumberId: config.phoneNumberId,
-                wabaId: config.wabaId
+            const result = await WhatsAppSender.send({
+                organisationId: orgId, to, accountId, source: 'agent', agentId: req.user?.id,
+                ...(type === 'template'
+                    ? { template: { name: req.body.templateName, language: req.body.languageCode || 'en_US', values } }
+                    : { text: sanitizedMessage })
             });
-
-            if (type === 'template') {
-                const { templateName, languageCode = 'en_US', components = [] } = req.body;
-                result = await whatsAppService.sendTemplateMessage(to, templateName, languageCode, components);
-            } else {
-                result = await whatsAppService.sendTextMessage(to, sanitizedMessage!);
-            }
-            waMessageId = result.messages?.[0]?.id;
-        } catch (metaError) {
-            // If Meta fails/not configured, try Gallabox
-            const user = (req as any).user;
-            const gallabox = await GallaboxService.getClientForOrg(user.organisationId);
-            
-            if (gallabox) {
-                if (type === 'template') {
-                    throw new Error('Template messages are currently only supported via Meta WhatsApp integration.');
+            return res.json({ success: true, result: { messages: [{ id: result.message.waMessageId }] }, conversationId: result.conversationId });
+        } catch (err) {
+            // Orgs connected only through Gallabox keep their existing text-sending path.
+            if (err instanceof WhatsAppSendError && err.code === 'NOT_CONNECTED' && type === 'text') {
+                const gallabox = await GallaboxService.getClientForOrg(orgId);
+                if (gallabox) {
+                    const result = await gallabox.sendWhatsAppMessage(to, sanitizedMessage!);
+                    await prisma.whatsAppMessage.create({
+                        data: {
+                            conversationId: `${digitsOnly(to)}_${orgId}`, phoneNumber: digitsOnly(to), direction: 'outgoing', messageType: 'text',
+                            content: { text: sanitizedMessage }, status: 'sent', waMessageId: result.messageId, sentAt: new Date(),
+                            organisationId: orgId, agentId: req.user?.id, source: 'agent'
+                        }
+                    });
+                    return res.json({ success: true, result });
                 }
-                result = await gallabox.sendWhatsAppMessage(to, sanitizedMessage!);
-                waMessageId = result.messageId; // Gallabox specific ID field
-            } else {
-                // If both fail, throw the original error
-                throw metaError;
             }
+            throw err;
         }
-
-        // Log the message to database
-        const user = req.user;
-        const orgId = getOrgId(user);
-
-        if (orgId) {
-            await prisma.whatsAppMessage.create({
-                data: {
-                    conversationId: `${to}_${Date.now()}`,
-                    phoneNumber: to,
-                    direction: 'outgoing',
-                    messageType: type,
-                    content: {
-                        text: type === 'text' ? sanitizedMessage : undefined,
-                        templateName: type === 'template' ? req.body.templateName : undefined,
-                        language: type === 'template' ? req.body.languageCode : undefined,
-                        components: type === 'template' ? req.body.components : undefined
-                    },
-                    status: 'sent',
-                    waMessageId: waMessageId,
-                    sentAt: new Date(),
-                    organisationId: orgId,
-                    agentId: user?.id
-                }
-            });
-
-            // Real-time socket notification for outgoing message
-            const io = getIO();
-            if (io && orgId) {
-                io.to(`org:${orgId}`).emit('whatsapp_message_received', {
-                    message: {
-                        phoneNumber: to,
-                        direction: 'outgoing',
-                        messageType: type,
-                        content: {
-                            text: type === 'text' ? sanitizedMessage : undefined,
-                            templateName: type === 'template' ? req.body.templateName : undefined,
-                            language: type === 'template' ? req.body.languageCode : undefined,
-                            components: type === 'template' ? req.body.components : undefined
-                        },
-                        status: 'sent',
-                        sentAt: new Date(),
-                        organisationId: orgId,
-                        agentId: user?.id
-                    },
-                    phoneNumber: to
-                });
-            }
-        }
-
-        res.json({ success: true, result });
     } catch (error: any) {
+        if (error instanceof WhatsAppSendError) {
+            const status = error.code === 'WINDOW_CLOSED' ? 409 : error.code === 'NOT_CONNECTED' ? 412 : error.code === 'API_ERROR' ? 502 : 400;
+            return res.status(status).json({ message: error.message, code: error.code });
+        }
         console.error('Error in sendMessage:', error);
         res.status(500).json({ message: error.message });
     }
@@ -429,101 +345,6 @@ export const getLeadWhatsAppMessages = async (req: AuthRequest, res: Response) =
     }
 };
 
-export const getConversations = async (req: AuthRequest, res: Response) => {
-    try {
-        const user = (req as any).user;
-        const orgId = getOrgId(user);
-        if (!orgId) return res.status(400).json({ message: 'No organisation found' });
-
-        const visibleUserIds = await getVisibleUserIds(user.id);
-        const isOrgAdmin = user.role === 'organisation_admin' || user.role === 'org_admin' || user.role === 'super_admin';
-
-        const visibilityFilter: any = isOrgAdmin ? {} : {
-            OR: [
-                { agentId: { in: visibleUserIds } },
-                { lead: { assignedToId: { in: visibleUserIds } } },
-                { lead: { createdById: { in: visibleUserIds } } },
-                { contact: { ownerId: { in: visibleUserIds } } }
-            ]
-        };
-
-        // 1. Get unique phone numbers (conversations)
-        const conversations = await prisma.whatsAppMessage.groupBy({
-            by: ['phoneNumber'],
-            where: {
-                organisationId: orgId,
-                isDeleted: false,
-                ...visibilityFilter
-            },
-            _max: {
-                createdAt: true
-            },
-            orderBy: {
-                _max: {
-                    createdAt: 'desc'
-                }
-            }
-        });
-
-        // 2. Fetch details for each conversation (latest message, contact info)
-        const conversationDetails = await Promise.all(conversations.map(async (conv) => {
-            const lastMessage = await prisma.whatsAppMessage.findFirst({
-                where: {
-                    organisationId: orgId,
-                    phoneNumber: conv.phoneNumber,
-                    ...visibilityFilter
-                },
-                include: {
-                    lead: { select: { firstName: true, lastName: true, assignedToId: true } },
-                    contact: { select: { firstName: true, lastName: true, ownerId: true } },
-                    agent: { select: { firstName: true, lastName: true } }
-                }
-            });
-
-            // Determine display name
-            let displayName = conv.phoneNumber;
-            if ((lastMessage as any)?.contact) {
-                const contact = (lastMessage as any).contact;
-                displayName = `${contact.firstName} ${contact.lastName}`;
-            } else if ((lastMessage as any)?.lead) {
-                const lead = (lastMessage as any).lead;
-                displayName = `${lead.firstName} ${lead.lastName}`;
-            }
-
-            // Count unread messages for this specific conversation
-            const unreadCount = await prisma.whatsAppMessage.count({
-                where: {
-                    organisationId: orgId,
-                    phoneNumber: conv.phoneNumber,
-                    direction: 'incoming',
-                    isReadByAgent: false,
-                    isDeleted: false,
-                    ...visibilityFilter
-                }
-            });
-
-            return {
-                phoneNumber: conv.phoneNumber,
-                lastMessage: lastMessage?.content,
-                lastMessageAt: lastMessage?.createdAt,
-                displayName: displayName.trim(),
-                leadId: lastMessage?.leadId,
-                contactId: lastMessage?.contactId,
-                messageType: lastMessage?.messageType,
-                unreadCount,
-                lastAgentId: lastMessage?.agentId,
-                lastAgentName: (lastMessage as any)?.agent ? `${(lastMessage as any).agent.firstName} ${(lastMessage as any).agent.lastName || ''}`.trim() : null,
-                ownerId: (lastMessage as any)?.lead?.assignedToId || (lastMessage as any)?.contact?.ownerId || null
-            };
-        }));
-
-        res.json(conversationDetails);
-    } catch (error: any) {
-        console.error('Error in getConversations:', error);
-        res.status(500).json({ message: error.message });
-    }
-};
-
 export const testConnection = async (req: AuthRequest, res: Response) => {
     try {
         const config = await getWhatsAppConfig(req);
@@ -551,25 +372,61 @@ export const testConnection = async (req: AuthRequest, res: Response) => {
     }
 };
 
-export const getTemplates = async (req: AuthRequest, res: Response) => {
+/**
+ * Central connection status used by every page in the WhatsApp hub.
+ * Never throws for "not connected" - that is a normal state the UI renders.
+ */
+export const getConnectionStatus = async (req: AuthRequest, res: Response) => {
     try {
-        const config = await getWhatsAppConfig(req);
+        const orgId = getOrgId(req.user);
+        if (!orgId) return res.status(400).json({ message: 'No organisation found' });
 
-        if (!config.wabaId) {
-            return res.status(400).json({ message: 'WABA ID required to fetch templates' });
+        const cred = await resolveWhatsAppCredentials(orgId);
+        if (!cred) return res.json({ connected: false });
+
+        const [account, accountsCount] = await Promise.all([
+            cred.accountId ? prisma.whatsAppAccount.findUnique({ where: { id: cred.accountId } }) : null,
+            prisma.whatsAppAccount.count({ where: { organisationId: orgId, isDeleted: false, status: 'active' } })
+        ]);
+
+        let phone: any = {};
+        try {
+            const svc = new WhatsAppService({ accessToken: cred.accessToken, phoneNumberId: cred.phoneNumberId, wabaId: cred.wabaId });
+            phone = await svc.makeRequest(`${cred.phoneNumberId}`, cred.accessToken, { fields: 'display_phone_number,verified_name,quality_rating' }, 1);
+        } catch (err: any) {
+            return res.json({ connected: true, healthy: false, phoneNumberId: cred.phoneNumberId, wabaId: cred.wabaId, accountId: cred.accountId, accountsCount, error: err.message });
         }
 
-        const whatsAppService = new WhatsAppService({
-            accessToken: config.accessToken,
-            phoneNumberId: config.phoneNumberId,
-            wabaId: config.wabaId
+        res.json({
+            connected: true, healthy: true, accountId: cred.accountId, accountsCount,
+            phoneNumberId: cred.phoneNumberId, wabaId: cred.wabaId,
+            phoneNumber: phone.display_phone_number, verifiedName: phone.verified_name,
+            qualityRating: phone.quality_rating || account?.qualityRating, messagingTier: account?.messagingTier
         });
+    } catch (error: any) {
+        console.error('Error in getConnectionStatus:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
 
-        const response = await whatsAppService.makeRequest(`${config.wabaId}/message_templates`, config.accessToken, {
-            fields: 'name,status,category,language,components'
-        });
+export const deleteTemplate = async (req: AuthRequest, res: Response) => {
+    try {
+        const orgId = getOrgId(req.user);
+        if (!orgId) return res.status(400).json({ message: 'No organisation found' });
+        await WhatsAppTemplateService.remove(orgId, req.params.name);
+        res.json({ success: true });
+    } catch (error: any) {
+        console.error('Error in deleteTemplate:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
 
-        res.json(response.data || []);
+export const getTemplates = async (req: AuthRequest, res: Response) => {
+    try {
+        const orgId = getOrgId(req.user);
+        if (!orgId) return res.status(400).json({ message: 'No organisation found' });
+        const rows = await WhatsAppTemplateService.list(orgId, { refresh: req.query.refresh === '1' });
+        res.json(rows);
     } catch (error: any) {
         console.error('Error in getTemplates:', error);
         res.status(500).json({ message: error.message });
@@ -578,20 +435,10 @@ export const getTemplates = async (req: AuthRequest, res: Response) => {
 
 export const createTemplate = async (req: AuthRequest, res: Response) => {
     try {
-        const config = await getWhatsAppConfig(req);
-
-        if (!config.wabaId) {
-            return res.status(400).json({ message: 'WABA ID required to create templates' });
-        }
-
-        const whatsAppService = new WhatsAppService({
-            accessToken: config.accessToken,
-            phoneNumberId: config.phoneNumberId,
-            wabaId: config.wabaId
-        });
-
-        const result = await whatsAppService.createTemplate(req.body);
-        res.json(result);
+        const orgId = getOrgId(req.user);
+        if (!orgId) return res.status(400).json({ message: 'No organisation found' });
+        const result = await WhatsAppTemplateService.create(orgId, req.body, req.body.accountId);
+        res.json({ ...result.meta, template: result.template });
     } catch (error: any) {
         console.error('Error in createTemplate:', error);
         res.status(500).json({ message: error.message });
@@ -1007,304 +854,5 @@ export const handleGallaboxWebhook = async (req: Request, res: Response) => {
     } catch (error: any) {
         console.error('Error in handleGallaboxWebhook:', error);
         res.status(500).json({ message: error.message });
-    }
-};
-
-export function parseWhatsAppCallDuration(text: string): number | null {
-    if (!text) return null;
-    const lower = text.toLowerCase();
-    
-    // Check if it's a call-related notification
-    const isCall = lower.includes('call') || lower.includes('voice') || lower.includes('video');
-    if (!isCall) {
-        return null;
-    }
-    
-    // Match format: 00:00:00 or 00:00 or 0:00
-    const timeMatch = lower.match(/\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
-    if (timeMatch) {
-        const parts = timeMatch.filter(Boolean);
-        if (parts.length === 3) {
-            // MM:SS
-            const mins = parseInt(timeMatch[1], 10);
-            const secs = parseInt(timeMatch[2], 10);
-            return mins * 60 + secs;
-        } else if (parts.length === 4) {
-            // HH:MM:SS
-            const hrs = parseInt(timeMatch[1], 10);
-            const mins = parseInt(timeMatch[2], 10);
-            const secs = parseInt(timeMatch[3], 10);
-            return hrs * 3600 + mins * 60 + secs;
-        }
-    }
-    
-    // Match text representation: e.g. "5 mins, 20 secs", "45 secs", "1 hr, 2 mins"
-    let seconds = 0;
-    let matched = false;
-    
-    // Hrs
-    const hrMatch = lower.match(/(\d+)\s*(?:hr|hour|h)s?/);
-    if (hrMatch) {
-        seconds += parseInt(hrMatch[1], 10) * 3600;
-        matched = true;
-    }
-    
-    // Mins
-    const minMatch = lower.match(/(\d+)\s*(?:min|minute|m)s?/);
-    if (minMatch) {
-        seconds += parseInt(minMatch[1], 10) * 60;
-        matched = true;
-    }
-    
-    // Secs
-    const secMatch = lower.match(/(\d+)\s*(?:sec|second|s)s?/);
-    if (secMatch) {
-        seconds += parseInt(secMatch[1], 10);
-        matched = true;
-    }
-    
-    if (matched) {
-        return seconds;
-    }
-    
-    return null;
-}
-
-export const logExternalMessage = async (req: Request, res: Response) => {
-    try {
-        const user = (req as any).user;
-        if (!user || !user.organisationId) {
-            return res.status(401).json({ error: 'Unauthorized.' });
-        }
-
-        const { phoneNumber, messageText, direction, timestamp, leadId, duration, callDuration } = req.body;
-
-        if (!phoneNumber || !messageText) {
-            return res.status(400).json({ error: 'phoneNumber and messageText are required.' });
-        }
-
-        // 0. Check if WhatsApp sync is enabled for this organisation
-        const organisation = await prisma.organisation.findUnique({
-            where: { id: user.organisationId },
-            select: { whatsAppScrapingEnabled: true }
-        });
-
-        if (!organisation?.whatsAppScrapingEnabled) {
-            console.log(`[WhatsAppSync] Request rejected: Sync is disabled for org ${user.organisationId}`);
-            return res.status(200).json({ 
-                success: false, 
-                message: 'WhatsApp synchronization is currently disabled by the administrator.' 
-            });
-        }
-
-        console.log(`[WhatsAppSync] Request: phone=${phoneNumber}, leadId=${leadId}, direction=${direction}`);
-
-        let targetLeadId = leadId;
-        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
-        const last10 = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : null;
-
-        // 1. Lead Lookup (if not provided or to verify)
-        if (!targetLeadId && last10) {
-            const variations = Array.from(new Set([
-                last10,
-                `+91${last10}`,
-                `91${last10}`,
-                `0${last10}`,
-                cleanPhone,
-                phoneNumber
-            ].filter(Boolean)));
-
-            const lead = await prisma.lead.findFirst({
-                where: {
-                    organisationId: user.organisationId,
-                    isDeleted: false,
-                    OR: [
-                        { phone: { in: variations } },
-                        { secondaryPhone: { in: variations } }
-                    ]
-                },
-                select: { id: true, firstName: true }
-            });
-            if (lead) {
-                targetLeadId = lead.id;
-                console.log(`[WhatsAppSync] Found matching lead: ${lead.firstName} (${lead.id}) by phone ${last10}`);
-            }
-        }
-        
-        // Fallback: If still no lead found, try matching by name (phoneNumber field might contain a name)
-        if (!targetLeadId && phoneNumber && phoneNumber.length > 2) {
-                const leadByName = await prisma.lead.findFirst({
-                    where: {
-                        organisationId: user.organisationId,
-                        OR: [
-                            { firstName: { equals: phoneNumber, mode: 'insensitive' } },
-                            { lastName: { equals: phoneNumber, mode: 'insensitive' } }
-                        ],
-                        isDeleted: false
-                    },
-                    select: { id: true, firstName: true }
-                });
-                if (leadByName) {
-                    targetLeadId = leadByName.id;
-                    console.log(`[WhatsAppSync] Found matching lead: ${leadByName.firstName} (${leadByName.id}) by name fallback: ${phoneNumber}`);
-                }
-            }
-        
-
-        // 1.5 Parse WhatsApp call duration from body or message text
-        let durationSecs = 0;
-        if (duration !== undefined && duration !== null) {
-            durationSecs = parseInt(String(duration), 10) || 0;
-        } else if (callDuration !== undefined && callDuration !== null) {
-            durationSecs = parseInt(String(callDuration), 10) || 0;
-        } else {
-            durationSecs = parseWhatsAppCallDuration(messageText) || 0;
-        }
-        
-        const durationMinutes = durationSecs / 60;
-
-        // 2. Deduplicate: Check if a WhatsApp interaction already exists within a 5-min window
-        const callDate = timestamp ? new Date(parseInt(timestamp, 10)) : new Date();
-        const windowStart = new Date(callDate.getTime() - 5 * 60 * 1000);
-        const windowEnd = new Date(callDate.getTime() + 5 * 60 * 1000);
-
-        // Normalize direction: accept inbound/incoming as 'inbound' and outbound/outgoing as 'outbound'
-        const rawDirection = String(direction || '').toLowerCase().trim();
-        const isInbound = ['inbound', 'incoming', 'in', '1'].includes(rawDirection);
-        const normalizedDirection: 'inbound' | 'outbound' = isInbound ? 'inbound' : 'outbound';
-        const msgDirection: 'incoming' | 'outgoing' = isInbound ? 'incoming' : 'outgoing';
-
-        const existingInteraction = await prisma.interaction.findFirst({
-            where: {
-                organisationId: user.organisationId,
-                type: 'whatsapp' as any,
-                leadId: targetLeadId || undefined,
-                phoneNumber: targetLeadId ? undefined : phoneNumber,
-                date: { gte: windowStart, lte: windowEnd },
-                direction: normalizedDirection
-            },
-            orderBy: { date: 'desc' }
-        });
-
-        let interaction;
-        if (existingInteraction) {
-            console.log(`[WhatsAppSync] Healing existing interaction ${existingInteraction.id}`);
-            
-            const shouldUpdateDuration = durationSecs > 0 || (existingInteraction.duration || 0) === 0;
-            
-            interaction = await prisma.interaction.update({
-                where: { id: existingInteraction.id },
-                data: {
-                    description: messageText,
-                    date: callDate, // Keep it fresh
-                    duration: shouldUpdateDuration ? (Math.round(durationMinutes * 100) / 100) : undefined,
-                    recordingDuration: shouldUpdateDuration ? durationSecs : undefined,
-                    callStatus: durationSecs > 0 ? 'completed' : existingInteraction.callStatus
-                }
-            });
-        } else {
-            console.log(`[WhatsAppSync] Creating NEW interaction for ${phoneNumber}`);
-            
-            // Map status based on duration if it is a call
-            let status = 'completed';
-            const lowerMessage = messageText.toLowerCase();
-            const isCall = lowerMessage.includes('call') || lowerMessage.includes('voice') || lowerMessage.includes('video');
-            
-            if (isCall) {
-                if (lowerMessage.includes('missed') || lowerMessage.includes('unanswered')) {
-                    status = 'missed';
-                } else if (lowerMessage.includes('declined') || lowerMessage.includes('rejected')) {
-                    status = 'rejected';
-                } else if (lowerMessage.includes('ongoing') || lowerMessage.includes('ringing')) {
-                    status = 'initiated';
-                } else if (durationSecs === 0) {
-                    status = 'failed';
-                }
-            } else {
-                status = 'completed'; // Default for messages
-            }
-
-            interaction = await prisma.interaction.create({
-                data: {
-                    type: 'whatsapp' as any,
-                    direction: normalizedDirection,
-                    subject: normalizedDirection === 'inbound' ? 'Incoming WhatsApp' : 'Outgoing WhatsApp',
-                    description: messageText,
-                    date: callDate,
-                    phoneNumber: phoneNumber,
-                    leadId: targetLeadId || undefined,
-                    organisationId: user.organisationId,
-                    createdById: user.id,
-                    duration: durationSecs > 0 ? (Math.round(durationMinutes * 100) / 100) : undefined,
-                    recordingDuration: durationSecs > 0 ? durationSecs : undefined,
-                    callStatus: status
-                }
-            });
-        }
-
-        console.log(`[WhatsAppSync] Logged interaction for ${phoneNumber} (Lead: ${targetLeadId || 'Unknown'})`);
-
-        // 3. Create a WhatsAppMessage record so it shows up in the WhatsApp Inbox
-        
-        // Deduplicate WhatsAppMessage within same 5-minute window
-        const existingMessage = await prisma.whatsAppMessage.findFirst({
-            where: {
-                organisationId: user.organisationId,
-                phoneNumber: phoneNumber,
-                direction: msgDirection,
-                content: { path: ['text'], equals: messageText },
-                createdAt: { gte: windowStart, lte: windowEnd }
-            }
-        });
-
-        let waMessage;
-        if (!existingMessage) {
-            waMessage = await prisma.whatsAppMessage.create({
-                data: {
-                    conversationId: `${phoneNumber}_${callDate.getTime()}`,
-                    phoneNumber: phoneNumber,
-                    direction: msgDirection,
-                    messageType: 'text',
-                    content: { text: messageText },
-                    status: 'delivered',
-                    sentAt: callDate,
-                    organisationId: user.organisationId,
-                    leadId: targetLeadId || undefined,
-                    isReadByAgent: false,
-                    createdAt: callDate
-                }
-            });
-            console.log(`[WhatsAppSync] Logged WhatsAppMessage for Inbox: ${waMessage.id}`);
-        } else {
-            console.log(`[WhatsAppSync] Skipped duplicate WhatsAppMessage for Inbox`);
-        }
-        
-        // Emit socket event for real-time UI updates
-        const io = req.app.get('io');
-        if (io && targetLeadId) {
-            io.to(`lead_${targetLeadId}`).emit('new_interaction', {
-                interaction: {
-                    ...interaction,
-                    type: 'whatsapp'
-                }
-            });
-        }
-        
-        if (io && waMessage && user.organisationId) {
-            io.to(`org:${user.organisationId}`).emit('whatsapp_message_received', {
-                message: waMessage,
-                phoneNumber: phoneNumber
-            });
-        }
-
-        res.status(201).json({ 
-            success: true, 
-            interactionId: interaction.id,
-            linkedToLead: !!targetLeadId 
-        });
-
-    } catch (error) {
-        console.error('[WhatsAppSync] Error logging external message:', error);
-        res.status(500).json({ error: 'Failed to log WhatsApp message' });
     }
 };

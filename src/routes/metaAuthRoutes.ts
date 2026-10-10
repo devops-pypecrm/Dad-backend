@@ -453,6 +453,16 @@ router.get('/callback', async (req, res) => {
             // delivery" - a well-documented Cloud API gotcha). The app must be
             // explicitly subscribed to EVERY WABA discovered, mirroring the Page
             // subscription done for the ads flow below.
+            // Non-blocking: pull quality rating / messaging tier and mirror existing templates.
+            (async () => {
+                try {
+                    const { WhatsAppHealthService } = await import('../services/whatsAppHealthService');
+                    const { WhatsAppTemplateService } = await import('../services/whatsAppTemplateService');
+                    await WhatsAppHealthService.checkOrg(orgId);
+                    await WhatsAppTemplateService.syncFromMeta(orgId);
+                } catch (e) { console.error('[Meta OAuth] post-connect sync failed:', e); }
+            })();
+
             const uniqueWabaIds = [...new Set(discoveredNumbers.map(n => n.wabaId))];
             for (const waba of uniqueWabaIds) {
                 try {
@@ -460,6 +470,7 @@ router.get('/callback', async (req, res) => {
                         params: { access_token: longLivedToken }
                     });
                     console.log(`[Meta OAuth] Subscribed app to WABA ${waba} webhooks`);
+                    await prisma.whatsAppAccount.updateMany({ where: { organisationId: orgId, wabaId: waba }, data: { webhookSubscribedAt: new Date(), connectionType: 'oauth' } });
                 } catch (subError: any) {
                     console.error(`[Meta OAuth] Failed to subscribe app to WABA ${waba}:`, subError.response?.data || subError.message);
                 }

@@ -4,7 +4,6 @@ import { getOrgId } from '../utils/hierarchyUtils';
 import { ResponseHandler } from '../utils/apiResponse';
 import { logger } from '../utils/logger';
 import { EmailService } from '../services/emailService';
-import { WhatsAppService } from '../services/whatsAppService';
 import { logAudit } from '../utils/auditLogger';
 import { isOrgAdmin } from '../utils/roleUtils';
 
@@ -244,65 +243,9 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
       }
 
       case 'send-whatsapp': {
-        if (!data?.message) {
-          return ResponseHandler.validationError(res, 'message is required for send-whatsapp action');
-        }
-
-        // Get leads with phone numbers
-        const leadsWithPhone = await prisma.lead.findMany({
-          where: {
-            id: { in: leadIds },
-            organisationId,
-            isDeleted: false,
-            phone: { not: '' }
-          },
-          select: { id: true, phone: true, firstName: true, lastName: true }
-        });
-
-        // Send WhatsApp messages (in background)
-        const whatsappPromises = leadsWithPhone.map(async (lead) => {
-          try {
-            const personalizedMessage = data.message
-              .replace(/\{firstName\}/g, lead.firstName)
-              .replace(/\{lastName\}/g, lead.lastName)
-              .replace(/\{fullName\}/g, `${lead.firstName} ${lead.lastName}`);
-
-            await WhatsAppService.getClientForOrg(organisationId)?.then(client =>
-              client?.sendTextMessage(lead.phone!, personalizedMessage)
-            );
-
-            // Log interaction
-            await prisma.interaction.create({
-              data: {
-                type: 'other', // Using 'other' for WhatsApp messages
-                direction: 'outbound',
-                subject: 'WhatsApp Message',
-                description: personalizedMessage,
-                leadId: lead.id,
-                createdById: userId,
-                organisationId
-              }
-            });
-          } catch (error) {
-            logger.error('Failed to send WhatsApp to lead', error, 'BULK_WHATSAPP', userId, organisationId, { leadId: lead.id });
-          }
-        });
-
-        // Don't wait for all messages to complete
-        Promise.all(whatsappPromises).catch(error => {
-          logger.error('Some bulk WhatsApp messages failed', error, 'BULK_WHATSAPP', userId, organisationId);
-        });
-
-        await logAudit({
-          organisationId,
-          actorId: userId,
-          action: 'BULK_LEAD_SEND_WHATSAPP',
-          entity: 'Lead',
-          details: { count: leadsWithPhone.length }
-        });
-
-        message = `WhatsApp messages sending initiated for ${leadsWithPhone.length} leads`;
-        break;
+        // Mass free-text WhatsApp messaging is not permitted by WhatsApp's policy (and is blocked
+        // outside the 24h window). Bulk outreach must use an approved template via WhatsApp > Campaigns.
+        return ResponseHandler.validationError(res, 'Bulk WhatsApp messages must be sent as a template campaign. Go to WhatsApp > Campaigns.');
       }
 
       case 'delete':

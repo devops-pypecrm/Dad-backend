@@ -80,6 +80,13 @@ export const createWhatsAppAccount = async (req: Request, res: Response) => {
 
         const { phoneNumber, displayName, provider, phoneNumberId, wabaId, accessToken, status, isDefault } = req.body;
         if (!phoneNumber) return res.status(400).json({ message: 'phoneNumber is required' });
+        // Only the official WhatsApp Cloud API (Meta) and the Gallabox BSP are supported.
+        if (provider && !['meta', 'gallabox'].includes(provider)) {
+            return res.status(400).json({ message: 'Unsupported provider. Use the official WhatsApp Cloud API (Meta) or Gallabox.' });
+        }
+        if ((provider || 'meta') === 'meta' && (!phoneNumberId || !wabaId || !accessToken)) {
+            return res.status(400).json({ message: 'Phone number ID, WhatsApp Business Account ID and access token are required for the WhatsApp Cloud API.' });
+        }
 
         const existing = await prisma.whatsAppAccount.findFirst({
             where: { organisationId: orgId as string, phoneNumber, isDeleted: false }
@@ -99,6 +106,7 @@ export const createWhatsAppAccount = async (req: Request, res: Response) => {
                 phoneNumber,
                 displayName,
                 provider: provider || 'meta',
+                connectionType: 'manual',
                 phoneNumberId,
                 wabaId,
                 accessToken: accessToken ? encrypt(accessToken) : undefined,
@@ -142,6 +150,9 @@ export const updateWhatsAppAccount = async (req: Request, res: Response) => {
         if (!existing) return res.status(404).json({ message: 'WhatsApp account not found' });
 
         const { phoneNumber, displayName, provider, phoneNumberId, wabaId, accessToken, status, isDefault } = req.body;
+        if (provider && !['meta', 'gallabox'].includes(provider)) {
+            return res.status(400).json({ message: 'Unsupported provider. Use the official WhatsApp Cloud API (Meta) or Gallabox.' });
+        }
 
         if (isDefault) {
             await prisma.whatsAppAccount.updateMany({

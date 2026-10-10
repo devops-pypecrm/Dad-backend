@@ -72,6 +72,7 @@ import webFormRoutes from './routes/webFormRoutes';
 import smsCampaignRoutes from './routes/smsCampaignRoutes';
 import whatsAppCampaignRoutes from './routes/whatsAppCampaignRoutes';
 import whatsAppRoutes from './routes/whatsAppRoutes';
+import whatsAppHubRoutes from './routes/whatsAppHubRoutes';
 import commissionRoutes from './routes/commissionRoutes';
 import issueRoutes from './routes/issueRoutes';
 import landingPageRoutes from './routes/landingPageRoutes';
@@ -396,6 +397,7 @@ app.use('/api/sms-campaigns', smsCampaignRoutes);
 // WhatsApp Campaigns (re-enabled after schema fix)
 app.use('/api/whatsapp-campaigns', whatsAppCampaignRoutes);
 app.use('/api/whatsapp', whatsAppRoutes);
+app.use('/api/whatsapp', whatsAppHubRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/issues', issueRoutes);
 app.use('/api/landing-pages', landingPageRoutes);

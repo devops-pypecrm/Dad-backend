@@ -111,7 +111,7 @@ export class SecurityAuditMiddleware {
      * Check for suspicious patterns in request data
      */
     private static checkSuspiciousPatterns(req: Request, ip: string, userAgent: string) {
-        const isFreeTextEndpoint = req.path.includes('/whatsapp/sync') || req.path.includes('/api/android/whatsapp/sync') || req.path.includes('/training/chat');
+        const isFreeTextEndpoint = req.path.includes('/training/chat');
         const checkData = [
             JSON.stringify(req.query),
             isFreeTextEndpoint ? '{}' : JSON.stringify(req.body),

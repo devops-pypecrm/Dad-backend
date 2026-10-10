@@ -3,6 +3,7 @@ import { TrashService } from './trashService';
 import { cronPrisma } from '../config/prisma';
 import { runShuffler } from './shuffler-module/shufflerService';
 import { runIssueRetentionCleanup } from './issueCleanupService';
+import { initWhatsAppScheduler } from './whatsAppScheduler';
 
 export const initCronJobs = () => {
     // Database Keep-Alive: a lightweight SELECT 1 every 5 minutes to prevent
@@ -413,4 +414,6 @@ export const initCronJobs = () => {
         }
     });
     console.log('[Cron] Shuffler job scheduled.');
+
+    initWhatsAppScheduler();
 };

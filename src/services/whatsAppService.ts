@@ -11,9 +11,10 @@ interface WhatsAppConfig {
 }
 
 import { decrypt } from '../utils/encryption';
+import { WHATSAPP_GRAPH_URL } from '../config/whatsapp';
 
 export class WhatsAppService {
-    private baseUrl = 'https://graph.facebook.com/v18.0';
+    private baseUrl = WHATSAPP_GRAPH_URL;
     private config: WhatsAppConfig;
 
     constructor(config: WhatsAppConfig) {
@@ -47,39 +48,11 @@ export class WhatsAppService {
      * Get configured service for an organisation
      */
     static async getClientForOrg(orgId: string): Promise<WhatsAppService | null> {
-        const org = await prisma.organisation.findUnique({
-            where: { id: orgId },
-            select: { integrations: true }
-        });
-
-        if (!org || !org.integrations) return null;
-
-        const integrations = org.integrations as any;
-
-        // Check for dedicated WhatsApp config first
-        let whatsappConfig = integrations.whatsapp;
-
-        // Fallback to meta config for backward compatibility
-        if (!whatsappConfig?.connected && integrations.meta?.phoneNumberId) {
-            whatsappConfig = {
-                accessToken: integrations.meta.accessToken,
-                phoneNumberId: integrations.meta.phoneNumberId,
-                wabaId: integrations.meta.wabaId,
-                connected: integrations.meta.connected
-            };
-        }
-
-        if (!whatsappConfig?.connected || !whatsappConfig.phoneNumberId || !whatsappConfig.accessToken) {
-            return null;
-        }
-
-        return new WhatsAppService({
-            accessToken: decrypt(whatsappConfig.accessToken),
-            phoneNumberId: whatsappConfig.phoneNumberId,
-            wabaId: whatsappConfig.wabaId,
-            appId: whatsappConfig.appId,
-            appSecret: whatsappConfig.appSecret
-        });
+        // Resolves the org's default connected number (relational account first, legacy JSON as fallback).
+        const { resolveWhatsAppCredentials } = await import('./whatsAppCredentials');
+        const cred = await resolveWhatsAppCredentials(orgId);
+        if (!cred) return null;
+        return new WhatsAppService({ accessToken: cred.accessToken, phoneNumberId: cred.phoneNumberId, wabaId: cred.wabaId });
     }
 
     /**
@@ -418,6 +391,27 @@ export class WhatsAppService {
         } catch (error: any) {
             console.error('WhatsApp Create Template Error:', error.response?.data || error.message);
             throw new Error(error.response?.data?.error?.message || 'Failed to create template');
+        }
+    }
+
+    /**
+     * Delete a message template by name (removes every language variant)
+     */
+    async deleteTemplate(name: string) {
+        try {
+            if (!this.config.wabaId) {
+                throw new Error('WhatsApp Business Account ID not configured');
+            }
+
+            const response = await axios.delete(`${this.baseUrl}/${this.config.wabaId}/message_templates`, {
+                params: { name },
+                headers: { 'Authorization': `Bearer ${this.config.accessToken}` }
+            });
+
+            return response.data;
+        } catch (error: any) {
+            console.error('WhatsApp Delete Template Error:', error.response?.data || error.message);
+            throw new Error(error.response?.data?.error?.message || 'Failed to delete template');
         }
     }
 

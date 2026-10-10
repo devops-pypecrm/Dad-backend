@@ -3,7 +3,6 @@ import { protect } from '../middleware/authMiddleware';
 import {
     sendMessage,
     getMessages,
-    getConversations,
     testConnection,
     getTemplates,
     createTemplate,
@@ -18,7 +17,9 @@ import {
     uploadMedia,
     handleWebhook,
     verifyWebhook,
-    handleGallaboxWebhook
+    handleGallaboxWebhook,
+    getConnectionStatus,
+    deleteTemplate
 } from '../controllers/whatsAppController';
 import { whatsappLimiter } from '../middleware/rateLimiter';
 import multer from 'multer';
@@ -37,13 +38,14 @@ const router = express.Router();
 // WhatsApp messaging endpoints with rate limiting and validation
 router.post('/send', protect, whatsappLimiter, validate(whatsappMessageSchema), sendMessage as any);
 router.post('/send-media', protect, whatsappLimiter, validate(whatsappMediaMessageSchema), sendMediaMessage as any);
-router.get('/conversations', protect, whatsappLimiter, getConversations as any);
 router.get('/messages', protect, whatsappLimiter, getMessages as any);
 router.get('/messages/statistics', protect, whatsappLimiter, getMessageStatistics as any);
 router.get('/messages/:messageId/status', protect, whatsappLimiter, getMessageStatus as any);
 router.post('/messages/mark-read', protect, whatsappLimiter, validate(markReadSchema), markMessageAsRead as any);
 router.post('/messages/mark-conversation-read', protect, whatsappLimiter, validate(markConversationReadSchema), markConversationAsRead as any);
 router.get('/messages/media/:mediaId', protect, getMedia as any);
+router.get('/connection', protect, whatsappLimiter, getConnectionStatus as any);
+router.delete('/templates/:name', protect, whatsappLimiter, deleteTemplate as any);
 router.get('/templates', protect, whatsappLimiter, getTemplates as any);
 router.post('/templates', protect, whatsappLimiter, validate(whatsappTemplateSchema), createTemplate as any);
 router.get('/analytics', protect, whatsappLimiter, getConversationAnalytics as any);

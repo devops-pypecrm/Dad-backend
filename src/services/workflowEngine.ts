@@ -1,7 +1,6 @@
 import prisma from '../config/prisma';
 import { EmailService } from './emailService';
 import { TaskService } from './taskService';
-import { WhatsAppService } from './whatsAppService';
 import { NotificationService } from './notificationService';
 
 export const WorkflowEngine = {
@@ -283,82 +282,50 @@ export const WorkflowEngine = {
                     }
 
                     case 'send_whatsapp': {
-                        const phone = action.config?.phone || data.phone;
+                        // Routed through the central sender: enforces opt-out, the 24h window
+                        // (free text only inside it) and approved templates, and logs to the inbox.
+                        const rawPhone = action.config?.phone || data.phone;
+                        const { toWhatsAppNumber } = await import('../utils/whatsappPhone');
+                        const phone = toWhatsAppNumber(rawPhone, { phoneCountryCode: data.phoneCountryCode, countryCode: data.countryCode });
                         if (!phone) break;
+                        const { WhatsAppSender } = await import('./whatsAppSender');
 
-                        const waClient = await WhatsAppService.getClientForOrg(organisationId);
-                        if (!waClient) {
-                            console.warn(`[WorkflowEngine] WhatsApp not connected for org ${organisationId}`);
-                            break;
-                        }
-
-                        if (action.config?.templateName) {
-                            console.log(`[WorkflowEngine] Action: Sending WhatsApp Template to ${phone}`);
-                            await waClient.sendTemplateMessage(
-                                phone,
-                                action.config.templateName,
-                                action.config.languageCode || 'en_US',
-                                action.config.components || []
-                            );
-                        } else if (action.config?.message) {
-                            const body = this.parseTemplate(action.config.message, data);
-                            console.log(`[WorkflowEngine] Action: Sending WhatsApp Text to ${phone}`);
-                            await waClient.sendTextMessage(phone, body);
-
-                            // Log Interaction
-                            await prisma.interaction.create({
-                                data: {
-                                    organisationId,
-                                    type: 'other',
-                                    subject: 'WhatsApp Workflow Message',
-                                    description: body,
-                                    direction: 'outbound',
+                        try {
+                            if (action.config?.templateName) {
+                                const values: string[] = (action.config.values || []).map((v: string) => this.parseTemplate(String(v), data));
+                                await WhatsAppSender.send({
+                                    organisationId, to: phone, source: 'workflow',
                                     leadId: workflow.triggerEntity === 'Lead' ? effectiveEntityId : undefined,
-                                    contactId: workflow.triggerEntity === 'Contact' ? effectiveEntityId : undefined,
-                                    createdById: workflow.createdById,
-                                    phoneNumber: phone
-                                }
-                            });
+                                    template: { name: action.config.templateName, language: action.config.languageCode || 'en_US', values }
+                                });
+                            } else if (action.config?.message) {
+                                const body = this.parseTemplate(action.config.message, data);
+                                await WhatsAppSender.send({
+                                    organisationId, to: phone, source: 'workflow', text: body,
+                                    leadId: workflow.triggerEntity === 'Lead' ? effectiveEntityId : undefined
+                                });
+                            }
+                        } catch (err: any) {
+                            console.warn(`[WorkflowEngine] send_whatsapp skipped: ${err.message}`);
                         }
                         break;
                     }
 
                     case 'send_whatsapp_reply': {
-                        // Like 'send_whatsapp', but for replying to an inbound WhatsApp
-                        // message (data.phoneNumber is the sender) and logs a real
-                        // WhatsAppMessage row so the reply shows up in the /whatsapp/inbox
-                        // UI, not just an Interaction audit entry.
+                        // Reply to an inbound WhatsApp message (data.phoneNumber is the sender).
                         const phone = action.config?.phone || data.phoneNumber || data.phone;
                         if (!phone) break;
-
-                        const waClient = await WhatsAppService.getClientForOrg(organisationId);
-                        if (!waClient) {
-                            console.warn(`[WorkflowEngine] WhatsApp not connected for org ${organisationId}`);
-                            break;
-                        }
-
                         const bodyText = this.parseTemplate(action.config?.message || '', data);
                         if (!bodyText) break;
-
-                        console.log(`[WorkflowEngine] Action: Sending WhatsApp Auto-Reply to ${phone}`);
-                        const sendResult = await waClient.sendTextMessage(phone, bodyText);
-
-                        await prisma.whatsAppMessage.create({
-                            data: {
-                                conversationId: data.conversationId || `${phone}_${organisationId}`,
-                                phoneNumber: phone,
-                                direction: 'outgoing',
-                                messageType: 'text',
-                                content: { text: bodyText },
-                                status: 'sent',
-                                waMessageId: sendResult?.messages?.[0]?.id,
-                                sentAt: new Date(),
-                                organisationId,
-                                leadId: data.leadId || undefined,
-                                whatsappAccountId: data.whatsappAccountId || undefined,
-                                isReadByAgent: true
-                            }
-                        });
+                        const { WhatsAppSender } = await import('./whatsAppSender');
+                        try {
+                            await WhatsAppSender.send({
+                                organisationId, to: phone, accountId: data.whatsappAccountId, source: 'workflow',
+                                text: bodyText, leadId: data.leadId
+                            });
+                        } catch (err: any) {
+                            console.warn(`[WorkflowEngine] send_whatsapp_reply skipped: ${err.message}`);
+                        }
                         break;
                     }
 
@@ -378,6 +345,13 @@ export const WorkflowEngine = {
                             await prisma.whatsAppMessage.update({
                                 where: { id: data.id },
                                 data: { agentId }
+                            }).catch(() => undefined);
+                        }
+
+                        if (data.conversationId) {
+                            await prisma.whatsAppConversation.updateMany({
+                                where: { id: data.conversationId, organisationId },
+                                data: { assigneeId: agentId, status: 'pending', botPausedUntil: new Date(Date.now() + 24 * 60 * 60_000) }
                             }).catch(() => undefined);
                         }
 
