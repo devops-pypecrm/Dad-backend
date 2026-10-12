@@ -34,7 +34,7 @@ const OAUTH_SCOPES = [
  * GET /api/meta/auth
  * Redirects user to Facebook OAuth login
  */
-router.get('/auth', protect, (req: AuthRequest, res: Response) => {
+router.get('/auth', protect, async (req: AuthRequest, res: Response) => {
     const appId = process.env.META_APP_ID;
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
     const serverUrl = process.env.SERVER_URL || 'http://localhost:5000';
@@ -51,6 +51,12 @@ router.get('/auth', protect, (req: AuthRequest, res: Response) => {
     // connect flow. Threaded through state so the callback knows which integration
     // the user actually intended to connect, and doesn't touch the other one.
     const connectType = req.query.type === 'whatsapp' ? 'whatsapp' : 'meta';
+    if (connectType === 'whatsapp') {
+        const { isWhatsAppEnabled, WHATSAPP_NOT_ENABLED_MESSAGE } = await import('../services/whatsAppFeature');
+        if (!(await isWhatsAppEnabled(req.user?.organisationId))) {
+            return res.status(403).json({ message: WHATSAPP_NOT_ENABLED_MESSAGE, code: 'WHATSAPP_NOT_ENABLED' });
+        }
+    }
 
     // Optional override so callers other than the Integrations page (e.g. the
     // WhatsApp Accounts settings page) can be returned to after the OAuth

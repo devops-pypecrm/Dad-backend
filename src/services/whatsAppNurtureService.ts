@@ -16,7 +16,7 @@ export const UNENGAGED_TAG = 'whatsapp_unengaged';
 export const WhatsAppNurtureService = {
     async tick() {
         const sequences = await prisma.whatsAppNurtureSequence.findMany({
-            where: { isActive: true, isDeleted: false, activatedAt: { not: null } },
+            where: { isActive: true, isDeleted: false, activatedAt: { not: null }, organisation: { enabledFeatures: { has: 'whatsapp' }, isDeleted: false } },
             include: { steps: { orderBy: { position: 'asc' } } }
         });
         for (const seq of sequences) {
@@ -54,7 +54,7 @@ export const WhatsAppNurtureService = {
 
     async sendDue() {
         const due = await prisma.whatsAppNurtureEnrollment.findMany({
-            where: { status: 'active', nextRunAt: { lte: new Date() } },
+            where: { status: 'active', nextRunAt: { lte: new Date() }, sequence: { organisation: { enabledFeatures: { has: 'whatsapp' }, isDeleted: false } } },
             orderBy: { nextRunAt: 'asc' },
             take: SEND_BATCH,
             include: { sequence: { include: { steps: { orderBy: { position: 'asc' } } } } }

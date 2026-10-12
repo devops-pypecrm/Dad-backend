@@ -9,16 +9,17 @@ import {
     testFlow
 } from '../controllers/whatsAppFlowController';
 import { protect } from '../middleware/authMiddleware';
+import { requireWhatsAppFeature } from '../services/whatsAppFeature';
 import { requireOrgAdmin } from '../utils/whatsappHttp';
 
 const router = express.Router();
 
-router.get('/', protect, requireOrgAdmin, getFlows);
-router.post('/', protect, requireOrgAdmin, createFlow);
-router.get('/:id', protect, requireOrgAdmin, getFlowById);
-router.put('/:id', protect, requireOrgAdmin, updateFlow);
-router.delete('/:id', protect, requireOrgAdmin, deleteFlow);
-router.get('/:id/sessions', protect, requireOrgAdmin, getFlowSessions);
-router.post('/:id/test', protect, requireOrgAdmin, testFlow);
+router.get('/', protect, requireWhatsAppFeature, requireOrgAdmin, getFlows);
+router.post('/', protect, requireWhatsAppFeature, requireOrgAdmin, createFlow);
+router.get('/:id', protect, requireWhatsAppFeature, requireOrgAdmin, getFlowById);
+router.put('/:id', protect, requireWhatsAppFeature, requireOrgAdmin, updateFlow);
+router.delete('/:id', protect, requireWhatsAppFeature, requireOrgAdmin, deleteFlow);
+router.get('/:id/sessions', protect, requireWhatsAppFeature, requireOrgAdmin, getFlowSessions);
+router.post('/:id/test', protect, requireWhatsAppFeature, requireOrgAdmin, testFlow);
 
 export default router;

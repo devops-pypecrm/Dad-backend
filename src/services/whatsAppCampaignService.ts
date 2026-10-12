@@ -219,7 +219,7 @@ export const WhatsAppCampaignService = {
 
     /** Scheduler hook: start campaigns whose scheduled time has arrived. */
     async tickScheduled() {
-        const due = await prisma.whatsAppCampaign.findMany({ where: { status: 'scheduled', isDeleted: false, scheduledAt: { lte: new Date() } }, select: { id: true }, take: 5 });
+        const due = await prisma.whatsAppCampaign.findMany({ where: { status: 'scheduled', isDeleted: false, scheduledAt: { lte: new Date() }, organisation: { enabledFeatures: { has: 'whatsapp' }, isDeleted: false } }, select: { id: true }, take: 5 });
         for (const c of due) this.process(c.id).catch(err => logger.error('Scheduled campaign failed', err, 'WhatsAppCampaign'));
     },
 

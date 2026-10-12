@@ -79,7 +79,7 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
         }
     } catch (error: any) {
         if (error instanceof WhatsAppSendError) {
-            const status = error.code === 'WINDOW_CLOSED' ? 409 : error.code === 'NOT_CONNECTED' ? 412 : error.code === 'API_ERROR' ? 502 : 400;
+            const status = error.code === 'NOT_ENABLED' ? 403 : error.code === 'WINDOW_CLOSED' ? 409 : error.code === 'NOT_CONNECTED' ? 412 : error.code === 'API_ERROR' ? 502 : 400;
             return res.status(status).json({ message: error.message, code: error.code });
         }
         console.error('Error in sendMessage:', error);

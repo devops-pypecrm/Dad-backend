@@ -15,7 +15,7 @@ const SEND_BATCH = 50;
  */
 export const WhatsAppAutoResponderService = {
     async tick() {
-        const responders = await prisma.whatsAppAutoResponder.findMany({ where: { isActive: true, isDeleted: false, activatedAt: { not: null } } });
+        const responders = await prisma.whatsAppAutoResponder.findMany({ where: { isActive: true, isDeleted: false, activatedAt: { not: null }, organisation: { enabledFeatures: { has: 'whatsapp' }, isDeleted: false } } });
         for (const r of responders) {
             try { await this.scheduleForNewLeads(r); } catch (err) { console.error('[AutoResponder] schedule failed', r.id, err); }
         }
@@ -65,7 +65,7 @@ export const WhatsAppAutoResponderService = {
 
     async sendDue() {
         const due = await prisma.whatsAppAutoResponderLog.findMany({
-            where: { status: 'scheduled', scheduledFor: { lte: new Date() } },
+            where: { status: 'scheduled', scheduledFor: { lte: new Date() }, responder: { organisation: { enabledFeatures: { has: 'whatsapp' }, isDeleted: false } } },
             orderBy: { scheduledFor: 'asc' },
             take: SEND_BATCH,
             include: { responder: true }

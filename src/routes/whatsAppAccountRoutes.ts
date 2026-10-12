@@ -7,14 +7,15 @@ import {
     getWhatsAppIntegrationReport
 } from '../controllers/whatsAppAccountController';
 import { protect } from '../middleware/authMiddleware';
+import { requireWhatsAppFeature } from '../services/whatsAppFeature';
 import { requireOrgAdmin } from '../utils/whatsappHttp';
 
 const router = express.Router();
 
-router.get('/report', protect, requireOrgAdmin, getWhatsAppIntegrationReport);
-router.get('/', protect, requireOrgAdmin, getWhatsAppAccounts);
-router.post('/', protect, requireOrgAdmin, createWhatsAppAccount);
-router.put('/:id', protect, requireOrgAdmin, updateWhatsAppAccount);
-router.delete('/:id', protect, requireOrgAdmin, deleteWhatsAppAccount);
+router.get('/report', protect, requireWhatsAppFeature, requireOrgAdmin, getWhatsAppIntegrationReport);
+router.get('/', protect, requireWhatsAppFeature, requireOrgAdmin, getWhatsAppAccounts);
+router.post('/', protect, requireWhatsAppFeature, requireOrgAdmin, createWhatsAppAccount);
+router.put('/:id', protect, requireWhatsAppFeature, requireOrgAdmin, updateWhatsAppAccount);
+router.delete('/:id', protect, requireWhatsAppFeature, requireOrgAdmin, deleteWhatsAppAccount);
 
 export default router;

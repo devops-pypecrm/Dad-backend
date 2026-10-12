@@ -3,6 +3,8 @@ import {
     getAllOrganisations,
     createOrganisation,
     updateOrganisationAdmin,
+    getFeatureSettings,
+    setFeatureOrganisations,
     suspendOrganisation,
     getOrganisationStats,
     resetUserPassword,
@@ -65,6 +67,10 @@ router.put('/ai-settings', protect, updateAiSettings);
 router.get('/organisations', protect, getAllOrganisations);
 router.post('/organisations', protect, createOrganisation);
 router.put('/organisations/:id', protect, updateOrganisationAdmin);
+
+// Feature Settings (which organisations get which platform feature)
+router.get('/features', protect, getFeatureSettings);
+router.put('/features/:key', protect, setFeatureOrganisations);
 router.delete('/organisations/:id', protect, deleteOrganisation); // Soft delete
 router.delete('/organisations/:id/permanent', protect, permanentlyDeleteOrganisation); // Permanent delete (super admin only)
 router.post('/organisations/:id/restore', protect, restoreOrganisation); // Restore deleted org

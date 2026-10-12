@@ -242,6 +242,12 @@ export const updateOrganisation = async (req: Request, res: Response) => {
 
         const data = { ...req.body };
 
+        // Platform feature switches belong to the Super Admin only; an organisation must not
+        // be able to enable them for itself through its own settings endpoint.
+        if (!user.isSuperAdmin) {
+            delete data.enabledFeatures;
+        }
+
         // Handle Meta Token Exchange
         if (data.integrations?.meta?.accessToken && data.integrations?.meta?.connected) {
             try {

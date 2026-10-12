@@ -3,13 +3,14 @@ import multer from 'multer';
 import { protect } from '../middleware/authMiddleware';
 import { whatsappLimiter } from '../middleware/rateLimiter';
 import { requireOrgAdmin } from '../utils/whatsappHttp';
+import { requireWhatsAppFeature } from '../services/whatsAppFeature';
 import * as inbox from '../controllers/whatsAppInboxController';
 import * as hub from '../controllers/whatsAppHubController';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-router.use(protect, whatsappLimiter);
+router.use(protect, requireWhatsAppFeature, whatsappLimiter);
 
 // ---- Team Inbox (any signed-in user; visibility follows the reporting hierarchy) ----
 router.get('/inbox/conversations', inbox.listConversations as any);

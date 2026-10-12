@@ -5,12 +5,13 @@ import { WhatsAppConversationService, previewFor, windowState } from './whatsApp
 import { WhatsAppComplianceService } from './whatsAppComplianceService';
 import { WhatsAppTemplateService } from './whatsAppTemplateService';
 import { digitsOnly, isValidWhatsAppNumber } from '../utils/whatsappPhone';
+import { isWhatsAppEnabled, WHATSAPP_NOT_ENABLED_MESSAGE } from './whatsAppFeature';
 import { emitToOrg } from '../socket';
 
 export type SendSource = 'agent' | 'flow' | 'ai' | 'auto_responder' | 'nurture' | 'campaign' | 'workflow';
 
 export class WhatsAppSendError extends Error {
-    constructor(public code: 'NOT_CONNECTED' | 'INVALID_NUMBER' | 'WINDOW_CLOSED' | 'OPTED_OUT' | 'TEMPLATE_NOT_APPROVED' | 'API_ERROR', message: string) {
+    constructor(public code: 'NOT_ENABLED' | 'NOT_CONNECTED' | 'INVALID_NUMBER' | 'WINDOW_CLOSED' | 'OPTED_OUT' | 'TEMPLATE_NOT_APPROVED' | 'API_ERROR', message: string) {
         super(message);
     }
 }
@@ -46,6 +47,7 @@ const BUSINESS_INITIATED: SendSource[] = ['campaign', 'nurture', 'auto_responder
 export const WhatsAppSender = {
     async send(p: SendParams) {
         const source: SendSource = p.source || 'agent';
+        if (!(await isWhatsAppEnabled(p.organisationId))) throw new WhatsAppSendError('NOT_ENABLED', WHATSAPP_NOT_ENABLED_MESSAGE);
         const phone = digitsOnly(p.to);
         if (!isValidWhatsAppNumber(phone)) throw new WhatsAppSendError('INVALID_NUMBER', 'Enter a valid number with country code.');
 

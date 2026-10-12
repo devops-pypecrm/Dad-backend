@@ -527,3 +527,115 @@ export const getHelperActivityLogUsers = async (req: Request, res: Response) => 
     }
 };
 
+
+// ---------------------------------------------------------------------------
+// Feature Settings: which organisations get which platform feature
+// ---------------------------------------------------------------------------
+
+/** Per-feature side effects so switching a feature off/on leaves nothing half-running. */
+const FEATURE_HOOKS: Record<string, { onEnable?: (orgId: string) => Promise<void>; onDisable?: (orgId: string) => Promise<void> }> = {
+    whatsapp: {
+        // Fresh baseline: automations must not message leads that arrived while the feature was off.
+        onEnable: async (orgId) => {
+            const now = new Date();
+            await prisma.whatsAppAutoResponder.updateMany({ where: { organisationId: orgId, isActive: true, isDeleted: false }, data: { activatedAt: now } });
+            await prisma.whatsAppNurtureSequence.updateMany({ where: { organisationId: orgId, isActive: true, isDeleted: false }, data: { activatedAt: now } });
+        },
+        // Stop anything already queued.
+        onDisable: async (orgId) => {
+            await prisma.whatsAppAutoResponderLog.updateMany({
+                where: { status: 'scheduled', responder: { organisationId: orgId } },
+                data: { status: 'skipped', error: 'WhatsApp was disabled for this organisation' }
+            });
+            await prisma.whatsAppNurtureEnrollment.updateMany({ where: { organisationId: orgId, status: 'active' }, data: { status: 'cancelled', nextRunAt: null } });
+            await prisma.whatsAppCampaign.updateMany({ where: { organisationId: orgId, status: 'scheduled' }, data: { status: 'cancelled' } });
+        }
+    }
+};
+
+/**
+ * @desc    The feature registry plus every organisation and the features it has.
+ * @route   GET /api/super-admin/features
+ */
+export const getFeatureSettings = async (req: Request, res: Response) => {
+    try {
+        if (!(req as any).user?.isSuperAdmin) return res.status(403).json({ message: 'Access denied' });
+        const { PLATFORM_FEATURES } = await import('../config/features');
+
+        const organisations = await prisma.organisation.findMany({
+            where: { isDeleted: false },
+            select: { id: true, name: true, slug: true, status: true, enabledFeatures: true },
+            orderBy: { name: 'asc' }
+        });
+
+        res.json({
+            features: PLATFORM_FEATURES.map(f => ({ ...f, enabledCount: organisations.filter(o => o.enabledFeatures.includes(f.key)).length })),
+            organisations
+        });
+    } catch (error: any) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * @desc    Set exactly which organisations have a feature. Organisations in
+ *          `organisationIds` get it; every other organisation loses it.
+ * @route   PUT /api/super-admin/features/:key   body: { organisationIds: string[] }
+ */
+export const setFeatureOrganisations = async (req: Request, res: Response) => {
+    try {
+        const actor = (req as any).user;
+        if (!actor?.isSuperAdmin) return res.status(403).json({ message: 'Access denied' });
+
+        const key = req.params.key;
+        const { isKnownFeature } = await import('../config/features');
+        if (!isKnownFeature(key)) return res.status(404).json({ message: 'Unknown feature' });
+
+        const ids = req.body?.organisationIds;
+        if (!Array.isArray(ids) || ids.some((i: unknown) => typeof i !== 'string')) {
+            return res.status(400).json({ message: 'organisationIds must be an array of organisation ids' });
+        }
+        const wanted = new Set<string>(ids);
+
+        const orgs = await prisma.organisation.findMany({ where: { isDeleted: false }, select: { id: true, name: true, enabledFeatures: true } });
+        const unknown = ids.filter((i: string) => !orgs.some(o => o.id === i));
+        if (unknown.length) return res.status(400).json({ message: `Unknown organisation(s): ${unknown.join(', ')}` });
+
+        const { invalidateFeatures } = await import('../services/whatsAppFeature');
+        const enabled: string[] = [];
+        const disabled: string[] = [];
+
+        for (const org of orgs) {
+            const has = org.enabledFeatures.includes(key);
+            const shouldHave = wanted.has(org.id);
+            if (has === shouldHave) continue;
+
+            await prisma.organisation.update({
+                where: { id: org.id },
+                data: { enabledFeatures: shouldHave ? Array.from(new Set([...org.enabledFeatures, key])) : org.enabledFeatures.filter(f => f !== key) }
+            });
+            const hook = FEATURE_HOOKS[key];
+            if (shouldHave) await hook?.onEnable?.(org.id); else await hook?.onDisable?.(org.id);
+            invalidateFeatures(org.id);
+            (shouldHave ? enabled : disabled).push(org.name);
+
+            try {
+                const { logAudit } = await import('../utils/auditLogger');
+                await logAudit({
+                    action: shouldHave ? 'ENABLE_FEATURE' : 'DISABLE_FEATURE',
+                    entity: 'Organisation',
+                    entityId: org.id,
+                    actorId: actor.id,
+                    organisationId: org.id,
+                    details: { feature: key, organisation: org.name }
+                } as any);
+            } catch (e) {
+                console.error('Audit Log Error:', e);
+            }
+        }
+
+        res.json({ feature: key, enabled, disabled, total: wanted.size });
+    } catch (error: any) {
+        res.status(500).json({ message: error.message });
+    }
+};

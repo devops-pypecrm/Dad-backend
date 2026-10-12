@@ -1,5 +1,6 @@
 import prisma from '../config/prisma';
 import { decrypt } from '../utils/encryption';
+import { isWhatsAppEnabled } from './whatsAppFeature';
 
 export interface WhatsAppCredentials {
     accountId: string | null;
@@ -19,6 +20,7 @@ export async function resolveWhatsAppCredentials(
     organisationId: string,
     accountId?: string | null
 ): Promise<WhatsAppCredentials | null> {
+    if (!(await isWhatsAppEnabled(organisationId))) return null; // feature switched off for this organisation
     let account = null;
 
     if (accountId) {
@@ -66,6 +68,7 @@ export async function resolveWhatsAppCredentials(
 
 /** All WABA ids an org has connected (for template sync across numbers). */
 export async function listWabaCredentials(organisationId: string): Promise<WhatsAppCredentials[]> {
+    if (!(await isWhatsAppEnabled(organisationId))) return [];
     const accounts = await prisma.whatsAppAccount.findMany({
         where: { organisationId, isDeleted: false, status: 'active', provider: 'meta', accessToken: { not: null }, wabaId: { not: null } }
     });

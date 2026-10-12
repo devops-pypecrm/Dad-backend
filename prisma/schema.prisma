@@ -45,6 +45,8 @@ model Organisation {
   upsellConfig            Json?
   ssoConfig               Json?
   whatsAppScrapingEnabled Boolean                  @default(false)
+  // Platform features the Super Admin has switched on for this organisation (see config/features.ts)
+  enabledFeatures         String[]                 @default([])
   leadStatuses            Json? // Custom lead status configuration: [{ id, label, color, isSystem, order }]
   opportunityLeadStatuses Json? // Custom opportunity lead status configuration: [{ id, label, color, isSystem, order }]
   accounts                Account[]

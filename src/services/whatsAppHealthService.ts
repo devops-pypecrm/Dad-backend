@@ -40,7 +40,7 @@ export const WhatsAppHealthService = {
     },
 
     async checkAll() {
-        const accounts = await prisma.whatsAppAccount.findMany({ where: { isDeleted: false, provider: 'meta', status: 'active' }, select: { id: true } });
+        const accounts = await prisma.whatsAppAccount.findMany({ where: { isDeleted: false, provider: 'meta', status: 'active', organisation: { enabledFeatures: { has: 'whatsapp' }, isDeleted: false } }, select: { id: true } });
         for (const a of accounts) await this.checkAccount(a.id);
     },
 

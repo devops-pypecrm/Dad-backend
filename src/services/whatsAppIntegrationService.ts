@@ -88,6 +88,8 @@ export const WhatsAppIntegrationService = {
                 return;
             }
             const organisationId = orgs[0].id;
+            const { isWhatsAppEnabled } = await import('./whatsAppFeature');
+            if (!(await isWhatsAppEnabled(organisationId))) return;
 
             // Normalize payload for generic processing
             const normalizedMessage = {
@@ -137,6 +139,10 @@ export const WhatsAppIntegrationService = {
             org = orgs[0];
         }
         if (!org) return;
+
+        // WhatsApp is a per-organisation feature switched on by the platform Super Admin.
+        const { isWhatsAppEnabled } = await import('./whatsAppFeature');
+        if (!(await isWhatsAppEnabled(org.id))) return;
 
         if (account) {
             prisma.whatsAppAccount.update({ where: { id: account.id }, data: { lastWebhookAt: new Date() } }).catch(() => undefined);
