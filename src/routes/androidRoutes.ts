@@ -110,6 +110,27 @@ const handleRecordingUpload = (req: express.Request, res: express.Response, next
     });
 };
 
+// The WhatsApp-scraper sync endpoint was removed (web-first, official Cloud
+// API only - see WhatsApp hub decisions). Old installed app builds that still
+// have the scraper's sync loop baked in don't know that and retry it with no
+// backoff whatsoever - observed live at ~165 req/s sustained from a single
+// device, each hit cheap individually but the volume itself is real load
+// (full middleware chain + a log line per request, 165x/sec, across both
+// cluster workers). A 429 here is just as fast to return as the previous
+// 404 was, but the rate limiter actually throttles the flood at the network
+// level instead of letting every retry through. 410 (not 404) tells any
+// client still polling this that it's gone for good, not transiently missing.
+const deprecatedSyncLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 2,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'This endpoint has been permanently removed. Please update the app.' }
+});
+router.all('/whatsapp/sync', deprecatedSyncLimiter, (req, res) => {
+    res.status(410).json({ message: 'This endpoint has been permanently removed. Please update the app.' });
+});
+
 // Routes
 router.get('/leads', protect, getAndroidLeads as any);
 router.get('/leads/:leadId/last-note', protect, getLeadLastNote as any);

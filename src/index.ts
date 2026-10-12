@@ -287,10 +287,15 @@ app.set('io', io);
 // with no rotation, which is exactly what fills PM2's log files on disk over time.
 // Only log what's actually worth seeing: failures and unusually slow requests.
 const SLOW_REQUEST_MS = 2000;
+// Old app builds hammering the now-removed WhatsApp-scraper sync endpoint
+// (see androidRoutes.ts) were logging ~165 lines/sec here - a known, already
+// rate-limited condition that doesn't need a disk-filling log line per retry.
+const KNOWN_NOISY_PATHS = ['/api/android/whatsapp/sync'];
 app.use((req, res, next) => {
     const start = Date.now();
     res.on('finish', () => {
         const duration = Date.now() - start;
+        if (KNOWN_NOISY_PATHS.some((p) => req.url.startsWith(p))) return;
         if (res.statusCode >= 400 || duration > SLOW_REQUEST_MS) {
             console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)`);
         }
