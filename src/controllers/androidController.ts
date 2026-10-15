@@ -606,10 +606,31 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                 updateData.hardwareDuration = carrierDurationSecs;
             }
 
-            await prisma.interaction.update({
-                where: { id: existingInteraction.id },
-                data: updateData
-            });
+            try {
+                await prisma.interaction.update({
+                    where: { id: existingInteraction.id },
+                    data: updateData
+                });
+            } catch (err: any) {
+                // A device retrying this exact upload (no backoff) can race a concurrent
+                // request that already moved this interaction onto a different
+                // hardwareId/organisationId pairing between our lookup and this update -
+                // same duplicate-suppression pattern as the create path below. The
+                // recording itself is still worth attaching rather than 500ing and making
+                // the device retry forever (observed live: ~165 req/s sustained from one
+                // such loop).
+                if (err.code === 'P2002') {
+                    console.log(`[AndroidUpload] Duplicate update suppressed via unique constraint (HwId: ${hardwareId}, InteractionId: ${existingInteraction.id})`);
+                    if (recording.fileUrl && hardwareId) {
+                        await prisma.interaction.updateMany({
+                            where: { organisationId: user.organisationId, hardwareId },
+                            data: { recordingUrl: recording.fileUrl }
+                        }).catch((e: any) => console.error('[AndroidUpload] Failed to attach recording after P2002 (update path)', e));
+                    }
+                } else {
+                    throw err;
+                }
+            }
         } else {
             // No existing interaction: Create a new record for lead or standalone
             
