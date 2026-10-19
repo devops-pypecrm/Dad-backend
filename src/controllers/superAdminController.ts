@@ -534,6 +534,13 @@ export const getHelperActivityLogUsers = async (req: Request, res: Response) => 
 
 /** Per-feature side effects so switching a feature off/on leaves nothing half-running. */
 const FEATURE_HOOKS: Record<string, { onEnable?: (orgId: string) => Promise<void>; onDisable?: (orgId: string) => Promise<void> }> = {
+    instagram: {
+        // Stop chatbots / comment bots so nothing fires if the feature is turned back on later.
+        onDisable: async (orgId) => {
+            await prisma.instagramChatbot.updateMany({ where: { organisationId: orgId }, data: { isActive: false } });
+            await prisma.instagramGateBot.updateMany({ where: { organisationId: orgId }, data: { isActive: false } });
+        }
+    },
     whatsapp: {
         // Fresh baseline: automations must not message leads that arrived while the feature was off.
         onEnable: async (orgId) => {

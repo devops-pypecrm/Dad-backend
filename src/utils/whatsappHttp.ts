@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { getOrgId } from './hierarchyUtils';
 import { isOrgAdmin } from './roleUtils';
 import { WhatsAppSendError } from '../services/whatsAppSender';
+import { InstagramSendError } from '../services/instagramSender';
 
 export type Handler = (req: Request, res: Response) => Promise<any>;
 
@@ -22,6 +23,10 @@ export const handle = (fn: Handler) => async (req: Request, res: Response) => {
     } catch (err: any) {
         if (err instanceof HttpError) return res.status(err.status).json({ message: err.message, code: err.code });
         if (err instanceof WhatsAppSendError) {
+            const status = err.code === 'NOT_ENABLED' ? 403 : err.code === 'WINDOW_CLOSED' ? 409 : err.code === 'NOT_CONNECTED' ? 412 : err.code === 'API_ERROR' ? 502 : 400;
+            return res.status(status).json({ message: err.message, code: err.code });
+        }
+        if (err instanceof InstagramSendError) {
             const status = err.code === 'NOT_ENABLED' ? 403 : err.code === 'WINDOW_CLOSED' ? 409 : err.code === 'NOT_CONNECTED' ? 412 : err.code === 'API_ERROR' ? 502 : 400;
             return res.status(status).json({ message: err.message, code: err.code });
         }

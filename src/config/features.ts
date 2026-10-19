@@ -14,6 +14,11 @@ export const PLATFORM_FEATURES: PlatformFeature[] = [
         key: 'whatsapp',
         label: 'WhatsApp Business',
         description: 'Team Inbox, templates, campaigns, chatbots & AI agent, auto responder, lead nurturing and the WhatsApp connection. When off, the organisation sees none of it, nothing is sent or received, and queued automations are stopped.'
+    },
+    {
+        key: 'instagram',
+        label: 'Instagram',
+        description: 'Shared inbox for Instagram DMs, keyword chatbots with a drag-and-drop workflow builder, and Ask-to-Follow comment bots, plus the Instagram connection. When off, the organisation sees none of it and nothing is sent or received.'
     }
 ];
 

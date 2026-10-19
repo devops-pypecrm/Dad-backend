@@ -73,6 +73,7 @@ import smsCampaignRoutes from './routes/smsCampaignRoutes';
 import whatsAppCampaignRoutes from './routes/whatsAppCampaignRoutes';
 import whatsAppRoutes from './routes/whatsAppRoutes';
 import whatsAppHubRoutes from './routes/whatsAppHubRoutes';
+import instagramRoutes from './routes/instagramRoutes';
 import commissionRoutes from './routes/commissionRoutes';
 import issueRoutes from './routes/issueRoutes';
 import landingPageRoutes from './routes/landingPageRoutes';
@@ -239,7 +240,8 @@ app.use([
     '/api/meta/webhook',
     '/api/public/meta/webhook',
     '/api/whatsapp/webhook',
-    '/api/whatsapp/webhook/gallabox'
+    '/api/whatsapp/webhook/gallabox',
+    '/api/instagram/webhook'
 ], (req, res, next) => {
     if (req.method === 'POST') {
         express.raw({ type: 'application/json' })(req, res, (err) => {
@@ -403,6 +405,7 @@ app.use('/api/sms-campaigns', smsCampaignRoutes);
 app.use('/api/whatsapp-campaigns', whatsAppCampaignRoutes);
 app.use('/api/whatsapp', whatsAppRoutes);
 app.use('/api/whatsapp', whatsAppHubRoutes);
+app.use('/api/instagram', instagramRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/issues', issueRoutes);
 app.use('/api/landing-pages', landingPageRoutes);

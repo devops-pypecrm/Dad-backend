@@ -4,6 +4,7 @@ import { cronPrisma } from '../config/prisma';
 import { runShuffler } from './shuffler-module/shufflerService';
 import { runIssueRetentionCleanup } from './issueCleanupService';
 import { initWhatsAppScheduler } from './whatsAppScheduler';
+import { initInstagramScheduler } from './instagramScheduler';
 import { LeadRotationService } from './leadRotationService';
 
 export const initCronJobs = () => {
@@ -431,4 +432,5 @@ export const initCronJobs = () => {
     console.log('[Cron] Lead rotation SLA job scheduled.');
 
     initWhatsAppScheduler();
+    initInstagramScheduler();
 };

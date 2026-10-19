@@ -20,6 +20,7 @@ export async function getEnabledFeatures(organisationId: string | null | undefin
 }
 
 export const hasFeature = async (organisationId: string | null | undefined, key: string) => (await getEnabledFeatures(organisationId)).includes(key);
+export const isInstagramEnabled = (organisationId: string | null | undefined) => hasFeature(organisationId, 'instagram');
 export const isWhatsAppEnabled = (organisationId: string | null | undefined) => hasFeature(organisationId, 'whatsapp');
 
 /** Call after the Super Admin changes features so it applies immediately on this instance. */
@@ -34,6 +35,18 @@ export const requireWhatsAppFeature = async (req: Request, res: Response, next: 
     try {
         if (await isWhatsAppEnabled(getOrgId((req as any).user))) return next();
         res.status(403).json({ message: WHATSAPP_NOT_ENABLED_MESSAGE, code: 'WHATSAPP_NOT_ENABLED' });
+    } catch (err) {
+        next(err);
+    }
+};
+
+export const INSTAGRAM_NOT_ENABLED_MESSAGE = 'Instagram is not enabled for your organisation. Contact Pype CRM support to get it switched on.';
+
+/** Express guard for every authenticated Instagram route. */
+export const requireInstagramFeature = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        if (await isInstagramEnabled(getOrgId((req as any).user))) return next();
+        res.status(403).json({ message: INSTAGRAM_NOT_ENABLED_MESSAGE, code: 'INSTAGRAM_NOT_ENABLED' });
     } catch (err) {
         next(err);
     }

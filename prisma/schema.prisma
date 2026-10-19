@@ -93,6 +93,7 @@ model Organisation {
   whatsAppNurtureSequences WhatsAppNurtureSequence[]
   whatsAppOptOuts         WhatsAppOptOut[]
   whatsAppAIAgent         WhatsAppAIAgent?
+  instagramAccounts       InstagramAccount[]
   commissions             Commission[]
   landingPages            LandingPage[]
   auditLogs               AuditLog[]
@@ -2445,4 +2446,182 @@ model WhatsAppAIUsage {
   updatedAt      DateTime @updatedAt
 
   @@unique([organisationId, month])
+}
+
+
+// ---------------------------------------------------------------------------
+// Instagram module: shared inbox, keyword chatbots, ask-to-follow (comment-gate) bots
+// ---------------------------------------------------------------------------
+
+model InstagramAccount {
+  id              String    @id @default(uuid())
+  organisationId  String
+  igUserId        String // Instagram-scoped id of the business account (webhook "entry.id")
+  username        String
+  name            String?
+  profilePicUrl   String?
+  accountType     String? // BUSINESS | MEDIA_CREATOR
+  followersCount  Int?
+  mediaCount      Int?
+  accessToken     String // long-lived token, stored encrypted
+  tokenExpiresAt  DateTime?
+  scopes          String[]
+  status          String    @default("active") // active | inactive | needs_reauth
+  webhookSubscribedAt DateTime?
+  lastWebhookAt   DateTime?
+  lastError       String?
+  connectedById   String?
+  connectedAt     DateTime  @default(now())
+  isDeleted       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  organisation  Organisation           @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  conversations InstagramConversation[]
+
+  @@unique([igUserId])
+  @@index([organisationId])
+}
+
+model InstagramConversation {
+  id                   String    @id @default(uuid())
+  organisationId       String
+  accountId            String
+  igsid                String // Instagram-scoped id of the other person
+  username             String?
+  displayName          String?
+  profilePicUrl        String?
+  assigneeId           String?
+  status               String    @default("open") // open | pending | resolved
+  labels               String[]
+  unreadCount          Int       @default(0)
+  lastMessageAt        DateTime  @default(now())
+  lastMessagePreview   String?
+  lastMessageDirection String?
+  lastInboundAt        DateTime? // start of the 24h messaging window
+  botPausedUntil       DateTime?
+  isDeleted            Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  account  InstagramAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  messages InstagramMessage[]
+  notes    InstagramConversationNote[]
+
+  @@unique([accountId, igsid])
+  @@index([organisationId, status, lastMessageAt])
+  @@index([organisationId, assigneeId])
+}
+
+model InstagramMessage {
+  id             String   @id @default(uuid())
+  organisationId String
+  accountId      String
+  conversationId String
+  igMessageId    String? // "mid"
+  direction      String // incoming | outgoing
+  messageType    String   @default("text") // text | image | video | audio | share | story_reply | story_mention | reaction | unsupported
+  content        Json?
+  status         String   @default("sent") // sent | received | read | failed
+  errorMessage   String?
+  source         String? // customer | agent | chatbot | comment_bot | app (sent from the Instagram app)
+  botId          String?
+  agentId        String?
+  createdAt      DateTime @default(now())
+
+  conversation InstagramConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, igMessageId])
+  @@index([conversationId, createdAt])
+  @@index([organisationId, source, createdAt])
+}
+
+model InstagramConversationNote {
+  id             String   @id @default(uuid())
+  conversationId String
+  organisationId String
+  authorId       String
+  body           String
+  createdAt      DateTime @default(now())
+
+  conversation InstagramConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model InstagramChatbot {
+  id                String    @id @default(uuid())
+  organisationId    String
+  accountId         String?
+  name              String
+  isActive          Boolean   @default(false)
+  keywords          String[]
+  matchType         String    @default("contains") // contains | exact
+  chatWindowMinutes Int       @default(60) // after a trigger the same person is not re-triggered for this long
+  messages          Json // [{ text: string, buttons?: [{ title, url }] }]
+  nodes             Json? // workflow canvas layout, as edited in the builder
+  sourceTemplateKey String?
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  isDeleted         Boolean   @default(false)
+
+  @@index([organisationId, isActive])
+}
+
+model InstagramChatbotSession {
+  id          String   @id @default(uuid())
+  botId       String
+  accountId   String
+  igsid       String
+  startedAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@unique([botId, igsid])
+  @@index([expiresAt])
+}
+
+model InstagramGateBot {
+  id              String   @id @default(uuid())
+  organisationId  String
+  accountId       String
+  name            String
+  isActive        Boolean  @default(true)
+  mediaId         String // the one post this bot watches
+  mediaPermalink  String?
+  mediaThumbUrl   String?
+  mediaCaption    String?
+  keywords        String[] // empty = any comment
+  publicReplies   String[] // optional public replies (one is chosen at random)
+  askMessage      String   @default("Thanks for your comment! Follow us and tap the button below to get your link.")
+  followButton    String   @default("I'm following")
+  notFollowingMessage String @default("We could not see a follow yet. Please follow the account, then tap the button again.")
+  rewardMessage   String   @default("You're in! Here is your link:")
+  rewardLink      String?
+  createdById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  isDeleted       Boolean  @default(false)
+
+  events InstagramGateEvent[]
+
+  @@index([organisationId, accountId, mediaId])
+}
+
+model InstagramGateEvent {
+  id          String   @id @default(uuid())
+  botId       String
+  commentId   String
+  igsid       String?
+  username    String?
+  state       String   @default("asked") // asked | rewarded | failed
+  attempts    Int      @default(0)
+  error       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bot InstagramGateBot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, commentId])
+  @@index([botId, igsid])
 }
