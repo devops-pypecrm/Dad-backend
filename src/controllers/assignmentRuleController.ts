@@ -91,7 +91,12 @@ export const createAssignmentRule = async (req: Request, res: Response) => {
             criteria: req.body.criteria || [],
             assignTo: req.body.assignTo,
             companySize: req.body.companySize,
-            enableRotation: req.body.enableRotation ?? false,
+            // Hard-forced off platform-wide - caused a notification-spam
+            // incident (see leadRotationService.ts). Re-enable only once
+            // that's actually fixed; don't trust req.body here even though
+            // the UI checkbox is also disabled, since this is a direct API
+            // write path.
+            enableRotation: false,
             timeLimitMinutes: Number(req.body.timeLimitMinutes) || 0,
             rotationType: req.body.rotationType || 'random',
             rotationPool: req.body.rotationPool || [],
@@ -146,7 +151,10 @@ export const updateAssignmentRule = async (req: Request, res: Response) => {
 
         const isAdmin = user.role === 'admin' || user.role === 'super_admin';
         const updateData = { ...req.body };
-        
+
+        // Hard-forced off platform-wide - see createAssignmentRule's comment.
+        updateData.enableRotation = false;
+
         // Remove raw branchId to handle it via connect/disconnect
         delete updateData.branchId;
 
