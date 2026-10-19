@@ -4,6 +4,7 @@ import { cronPrisma } from '../config/prisma';
 import { runShuffler } from './shuffler-module/shufflerService';
 import { runIssueRetentionCleanup } from './issueCleanupService';
 import { initWhatsAppScheduler } from './whatsAppScheduler';
+import { LeadRotationService } from './leadRotationService';
 
 export const initCronJobs = () => {
     // Database Keep-Alive: a lightweight SELECT 1 every 5 minutes to prevent
@@ -414,6 +415,20 @@ export const initCronJobs = () => {
         }
     });
     console.log('[Cron] Shuffler job scheduled.');
+
+    // Lead Rotation SLA check – every 5 minutes. Scans AssignmentRules with
+    // enableRotation=true and reassigns leads that have sat with their
+    // current owner past rule.timeLimitMinutes with no Interaction logged
+    // since assignment. See leadRotationService.ts for the full logic -
+    // this was previously a UI-only setting with no enforcement at all.
+    cron.schedule('*/5 * * * *', async () => {
+        try {
+            await LeadRotationService.runRotationCheck();
+        } catch (error) {
+            console.error('[Cron] Error running lead rotation SLA check:', error);
+        }
+    });
+    console.log('[Cron] Lead rotation SLA job scheduled.');
 
     initWhatsAppScheduler();
 };

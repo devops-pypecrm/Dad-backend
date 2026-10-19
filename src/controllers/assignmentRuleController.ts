@@ -91,6 +91,10 @@ export const createAssignmentRule = async (req: Request, res: Response) => {
             criteria: req.body.criteria || [],
             assignTo: req.body.assignTo,
             companySize: req.body.companySize,
+            enableRotation: req.body.enableRotation ?? false,
+            timeLimitMinutes: Number(req.body.timeLimitMinutes) || 0,
+            rotationType: req.body.rotationType || 'random',
+            rotationPool: req.body.rotationPool || [],
             organisation: { connect: { id: orgId } },
             createdBy: { connect: { id: user.id } }
         };
