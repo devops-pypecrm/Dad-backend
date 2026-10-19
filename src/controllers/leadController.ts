@@ -1974,24 +1974,28 @@ export const getViolations = async (req: express.Request, res: express.Response)
     try {
         logDebug('Entered getViolations');
         const user = (req as any).user;
-        const pageSize = Number(req.query.pageSize) || 10;
+        const pageSize = Number(req.query.pageSize) || 20;
         const page = Number(req.query.page) || 1;
-        logDebug(`User: ${user?.id}, Role: ${user?.role}`);
+        const status = req.query.status as string; // 'all' | 'pending' | 'explained'
+        const search = (req.query.search as string || '').trim();
 
-        // User sees violations where they were the PREVIOUS owner (the one who failed)
-        // OR if they are a manager, seeing violations of their subordinates?
-        // Prompt says "user and their managers need to give an explanation".
+        // Super admin has no org-specific context and doesn't own leads
+        // themselves — violations are only meaningful for org users.
+        if (user.role === 'super_admin') {
+            return res.json({ violations: [], page: 1, pages: 0, total: 0, stats: { total: 0, pending: 0, resolved: 0 } });
+        }
+
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(403).json({ message: 'No org' });
 
         const where: any = {
             rotationViolation: true,
             isDeleted: false,
+            organisationId: orgId,
         };
 
-        if (user.role !== 'super_admin') {
-            const orgId = getOrgId(user);
-            if (!orgId) return res.status(403).json({ message: 'No org' });
-            where.organisationId = orgId;
-
+        // If user is not admin/org_admin, restrict to their visible hierarchy
+        if (!isAdmin(user) && !isOrgAdmin(user)) {
             let visibleUserIds: string[] = [];
             try {
                 logDebug('Fetching visible users...');
@@ -2002,26 +2006,117 @@ export const getViolations = async (req: express.Request, res: express.Response)
                 console.error('[getViolations] Error fetching visible users:', subError);
                 visibleUserIds = [user.id];
             }
-
             where.previousOwnerId = { in: visibleUserIds };
+        }
+
+        if (status === 'pending') {
+            where.OR = [
+                { userExplanation: null },
+                { userExplanation: '' },
+                { managerExplanation: null },
+                { managerExplanation: '' }
+            ];
+        } else if (status === 'explained') {
+            where.AND = [
+                { userExplanation: { not: null } },
+                { userExplanation: { not: '' } },
+                { managerExplanation: { not: null } },
+                { managerExplanation: { not: '' } }
+            ];
+        }
+
+        if (search) {
+            const searchClause = {
+                OR: [
+                    { firstName: { contains: search, mode: 'insensitive' as const } },
+                    { lastName: { contains: search, mode: 'insensitive' as const } },
+                    { company: { contains: search, mode: 'insensitive' as const } },
+                    { phone: { contains: search } },
+                    { email: { contains: search, mode: 'insensitive' as const } },
+                    {
+                        previousOwner: {
+                            OR: [
+                                { firstName: { contains: search, mode: 'insensitive' as const } },
+                                { lastName: { contains: search, mode: 'insensitive' as const } }
+                            ]
+                        }
+                    }
+                ]
+            };
+            if (where.AND) {
+                where.AND.push(searchClause);
+            } else {
+                where.AND = [searchClause];
+            }
         }
 
         logDebug(`[Leads] Querying Prisma with where: ${JSON.stringify(where)}`);
         const violations = await prisma.lead.findMany({
             where,
             include: {
-                previousOwner: { select: { firstName: true, lastName: true } },
-                assignedTo: { select: { firstName: true, lastName: true } }
+                previousOwner: { select: { id: true, firstName: true, lastName: true, email: true } },
+                assignedTo: { select: { id: true, firstName: true, lastName: true, email: true } }
             },
             skip: (page - 1) * pageSize,
             take: pageSize,
             orderBy: { violationTime: 'desc' }
         });
 
-        logDebug(`[Leads] Violations found: ${violations.length}`);
-
         const total = await prisma.lead.count({ where });
-        res.json({ violations, page, pages: Math.ceil(total / pageSize), total });
+
+        // Base filter for stats count
+        const statsBaseWhere: any = {
+            rotationViolation: true,
+            isDeleted: false,
+            organisationId: orgId,
+        };
+        if (!isAdmin(user) && !isOrgAdmin(user)) {
+            let visibleUserIds: string[] = [];
+            try {
+                visibleUserIds = await getVisibleUserIds(user.id);
+            } catch {
+                visibleUserIds = [user.id];
+            }
+            statsBaseWhere.previousOwnerId = { in: visibleUserIds };
+        }
+
+        const [totalCount, pendingCount, resolvedCount] = await Promise.all([
+            prisma.lead.count({ where: statsBaseWhere }),
+            prisma.lead.count({
+                where: {
+                    ...statsBaseWhere,
+                    OR: [
+                        { userExplanation: null },
+                        { userExplanation: '' },
+                        { managerExplanation: null },
+                        { managerExplanation: '' }
+                    ]
+                }
+            }),
+            prisma.lead.count({
+                where: {
+                    ...statsBaseWhere,
+                    AND: [
+                        { userExplanation: { not: null } },
+                        { userExplanation: { not: '' } },
+                        { managerExplanation: { not: null } },
+                        { managerExplanation: { not: '' } }
+                    ]
+                }
+            })
+        ]);
+
+        res.json({
+            violations,
+            page,
+            pages: Math.ceil(total / pageSize),
+            total,
+            stats: {
+                total: totalCount,
+                pending: pendingCount,
+                resolved: resolvedCount
+            }
+        });
 
     } catch (error) {
         logDebug(`getViolations CRASHED: ${(error as Error).message}\nStack: ${(error as Error).stack}`);
