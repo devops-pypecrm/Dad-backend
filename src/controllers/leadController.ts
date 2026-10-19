@@ -117,11 +117,15 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
         // anything, matching the OR-combining pattern used elsewhere in this
         // function.
         if (req.query.campaignId) {
+            // Also accepts a comma-separated list (the lead-export dialog lets
+            // an admin pick several campaigns at once) - OR across every
+            // campaignId/campaignName match for every id given.
+            const campaignIds = String(req.query.campaignId).split(',').map(s => s.trim()).filter(Boolean);
             andConditions.push({
-                OR: [
-                    { sourceDetails: { path: ['campaignId'], equals: req.query.campaignId as string } },
-                    { sourceDetails: { path: ['campaignName'], equals: req.query.campaignId as string } }
-                ]
+                OR: campaignIds.flatMap(cid => ([
+                    { sourceDetails: { path: ['campaignId'], equals: cid } },
+                    { sourceDetails: { path: ['campaignName'], equals: cid } }
+                ]))
             });
         }
 
@@ -163,9 +167,11 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
             });
         }
 
-        // Filter: Assigned User
+        // Filter: Assigned User. Also accepts a comma-separated list (the
+        // lead-export dialog lets an admin pick several users at once).
         if (req.query.assignedTo) {
-            where.assignedToId = req.query.assignedTo as string;
+            const assignedIds = String(req.query.assignedTo).split(',').map(s => s.trim()).filter(Boolean);
+            where.assignedToId = assignedIds.length > 1 ? { in: assignedIds } : assignedIds[0];
         }
 
         // Filter: Date Range (createdAt)
