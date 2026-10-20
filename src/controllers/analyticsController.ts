@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { getOrgId, getVisibleUserIds, getLeadVisibilityFilter, getOppVisibilityFilter } from '../utils/hierarchyUtils';
 import { isSuperAdmin as checkSuperAdmin, hasOrgWideVisibility } from '../utils/roleUtils';
+import { getISTDateBounds } from '../utils/callUtils';
 import fs from 'fs';
 import path from 'path';
 
@@ -1260,19 +1261,20 @@ export const getLeadCampaigns = async (req: Request, res: Response) => {
 const resolvePeriodRange = (req: Request): { gte: Date; lt?: Date } => {
     const { period = 'week', startDate, endDate } = req.query as { period?: string; startDate?: string; endDate?: string };
     const now = new Date();
+    const { startOfToday, endOfToday, startOfYesterday, endOfYesterday, startOfMonth } = getISTDateBounds(now);
 
     switch (period) {
         case 'allTime':
             return { gte: new Date(0) };
         case 'today':
-            return { gte: new Date(now.getFullYear(), now.getMonth(), now.getDate()) };
+            return { gte: startOfToday, lt: new Date(endOfToday.getTime() + 1) };
         case 'yesterday':
             return {
-                gte: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1),
-                lt: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+                gte: startOfYesterday,
+                lt: new Date(endOfYesterday.getTime() + 1),
             };
         case 'thisMonth':
-            return { gte: new Date(now.getFullYear(), now.getMonth(), 1) };
+            return { gte: startOfMonth };
         case 'last30':
             return { gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
         case 'custom': {

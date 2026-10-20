@@ -162,3 +162,20 @@ export function formatCallDurationDescription(seconds: number, options: { hasRec
     
     return desc;
 }
+
+/**
+ * Utility to calculate Indian Standard Time (IST, UTC+5:30) date boundaries.
+ * Prevents UTC server skew where "today" starts at 5:30 AM IST instead of 12:00 AM IST.
+ */
+export function getISTDateBounds(now: Date = new Date()) {
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const nowIST = new Date(now.getTime() + istOffset);
+    const startOfTodayIST = new Date(Date.UTC(nowIST.getUTCFullYear(), nowIST.getUTCMonth(), nowIST.getUTCDate()));
+    const startOfToday = new Date(startOfTodayIST.getTime() - istOffset);
+    const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000 - 1);
+    const startOfYesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
+    const endOfYesterday = new Date(startOfToday.getTime() - 1);
+    const startOfMonthIST = new Date(Date.UTC(nowIST.getUTCFullYear(), nowIST.getUTCMonth(), 1));
+    const startOfMonth = new Date(startOfMonthIST.getTime() - istOffset);
+    return { startOfToday, endOfToday, startOfYesterday, endOfYesterday, startOfMonth };
+}

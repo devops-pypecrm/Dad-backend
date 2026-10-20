@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { getOrgId, getVisibleUserIds } from '../utils/hierarchyUtils';
-import { resolveBestDurationSeconds, synchronizeDurations } from '../utils/callUtils';
+import { resolveBestDurationSeconds, synchronizeDurations, getISTDateBounds } from '../utils/callUtils';
 import { FollowUpService } from '../services/followUpService';
 import path from 'path';
 import fs from 'fs';
@@ -403,17 +403,19 @@ export const getCallStats = async (req: Request, res: Response) => {
         const now = new Date();
         let startDate: Date;
         let endDate: Date | null = null;
+        const { startOfToday, endOfToday, startOfYesterday, endOfYesterday, startOfMonth } = getISTDateBounds(now);
 
         switch (period) {
             case 'allTime':
                 startDate = new Date(0);
                 break;
             case 'today':
-                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                startDate = startOfToday;
+                endDate = endOfToday;
                 break;
             case 'yesterday':
-                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-                endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                startDate = startOfYesterday;
+                endDate = endOfYesterday;
                 break;
             case 'week':
                 startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -423,7 +425,7 @@ export const getCallStats = async (req: Request, res: Response) => {
                 break;
             case 'month':
             case 'thisMonth':
-                startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                startDate = startOfMonth;
                 break;
             case 'custom':
                 startDate = customStart ? new Date(String(customStart)) : new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -606,23 +608,23 @@ export const getUserCallAnalytics = async (req: Request, res: Response) => {
         // Calculate date range
         const now = new Date();
         let startDate: Date;
+        const { startOfToday, startOfYesterday, endOfYesterday, startOfMonth } = getISTDateBounds(now);
 
         switch (period) {
             case 'today':
-                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                startDate = startOfToday;
                 break;
             case 'yesterday':
-                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-                const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                startDate = startOfYesterday;
                 break;
             case 'week':
                 startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
                 break;
             case 'month':
-                startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                startDate = startOfMonth;
                 break;
             default:
-                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                startDate = startOfToday;
         }
 
         const baseWhere: any = {
@@ -633,8 +635,7 @@ export const getUserCallAnalytics = async (req: Request, res: Response) => {
         };
 
         if (period === 'yesterday') {
-            const yesterdayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            baseWhere.date = { gte: startDate, lt: yesterdayEnd };
+            baseWhere.date = { gte: startOfYesterday, lte: endOfYesterday };
         }
 
         if (direction && direction !== 'all') {

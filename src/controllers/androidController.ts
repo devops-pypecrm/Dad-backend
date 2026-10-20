@@ -17,7 +17,7 @@ import { synchronizeDurations, resolveBestDurationSeconds, formatCallDurationDes
 // of the new call's own timestamp; outside that window, treat it as a
 // coincidental ID reuse — fall through to fuzzy/new-row logic instead of
 // healing a wildly-unrelated historical record.
-const HARDWARE_ID_MATCH_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
+const HARDWARE_ID_MATCH_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours (bounded so same-day syncs match, but yesterday's calls are never healed)
 const isWithinHardwareIdMatchWindow = (candidateDate: Date, callDate: Date): boolean =>
     Math.abs(candidateDate.getTime() - callDate.getTime()) <= HARDWARE_ID_MATCH_WINDOW_MS;
 
@@ -503,7 +503,7 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                 phoneNumber
             ].filter(Boolean)));
 
-            // First try to find an 'initiated' call within a 24-hour window
+            // First try to find an 'initiated' call within a 4-hour window
             existingInteraction = await prisma.interaction.findFirst({
                 where: {
                     organisationId: user.organisationId,
@@ -512,16 +512,17 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                     callStatus: 'initiated',
                     phoneNumber: { in: variations },
                     date: {
-                        gte: new Date(callDate.getTime() - 24 * 60 * 60 * 1000), // 24 hours before
+                        gte: new Date(callDate.getTime() - 4 * 60 * 60 * 1000), // 4 hours before
                         lte: searchWindowEnd
                     }
                 },
                 orderBy: { date: 'desc' }
             });
 
-            // If no initiated call, fall back to the strict 1-hour window for completed/missed/failed calls
+            // If no initiated call, fall back to a 15-minute window for completed/missed/failed calls
             if (!existingInteraction) {
-                existingInteraction = await prisma.interaction.findFirst({
+                const phase3bUploadStart = new Date(callDate.getTime() - 15 * 60 * 1000);
+                const candidate = await prisma.interaction.findFirst({
                     where: {
                         organisationId: user.organisationId,
                         createdById: user.id,
@@ -529,12 +530,15 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                         callStatus: { in: ['completed', 'missed', 'failed', 'rejected'] },
                         phoneNumber: { in: variations },
                         date: {
-                            gte: searchWindowStart,
+                            gte: phase3bUploadStart,
                             lte: searchWindowEnd
                         }
                     },
                     orderBy: { date: 'desc' }
                 });
+                if (candidate && (!hardwareId || !candidate.hardwareId || candidate.hardwareId === hardwareId)) {
+                    existingInteraction = candidate;
+                }
             }
         }
 
@@ -1037,10 +1041,10 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                         phoneNumber
                     ].filter(Boolean)));
 
-                    const fuzzyWindowStart = new Date(callDate.getTime() - 24 * 60 * 60 * 1000); // 24 hours
+                    // Phase 3a: Real-time initiated call → reconcile unconditionally within 4 hours
+                    const initiatedWindowStart = new Date(callDate.getTime() - 4 * 60 * 60 * 1000); // 4 hours
                     const fuzzyWindowEnd   = new Date(callDate.getTime() + 5 * 60 * 1000);
 
-                    // Phase 3a: Real-time initiated call → reconcile unconditionally
                     existingInteraction = await prisma.interaction.findFirst({
                         where: {
                             organisationId: user.organisationId,
@@ -1048,12 +1052,12 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                             type: 'call',
                             callStatus: 'initiated',
                             phoneNumber: { in: variations },
-                            date: { gte: fuzzyWindowStart, lte: fuzzyWindowEnd }
+                            date: { gte: initiatedWindowStart, lte: fuzzyWindowEnd }
                         },
                         orderBy: { date: 'desc' }
                     });
 
-                    // Phase 3b: Already-logged call — only reconcile if it's genuinely the same call
+                    // Phase 3b: Already-logged call — only reconcile if it's genuinely the same call within 15 minutes!
                     if (!existingInteraction) {
                         // Derive direction early from rawType (same logic used later for CREATE path)
                         const prelimDirection: 'inbound' | 'outbound' =
@@ -1063,7 +1067,13 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                         const rawDurationSecs = parseInt(String(duration), 10) || 0;
                         const FUZZY_DUR_TOL_MIN = 5 / 60; // 5-second tolerance expressed in minutes
 
-                        existingInteraction = await prisma.interaction.findFirst({
+                        // A duplicate/carrier update for an already-logged call only ever arrives
+                        // within a few minutes of the call itself — never across hours or days.
+                        // Using a 24h window caused daily follow-up calls (e.g. rep called yesterday at 12pm,
+                        // calls again today at 11:50am) to match yesterday's interaction and be skipped!
+                        const phase3bWindowStart = new Date(callDate.getTime() - 15 * 60 * 1000); // 15 minutes
+
+                        const candidate = await prisma.interaction.findFirst({
                             where: {
                                 organisationId: user.organisationId,
                                 createdById: user.id,
@@ -1071,7 +1081,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                                 callStatus: { in: ['completed', 'missed', 'failed', 'rejected'] },
                                 direction: prelimDirection,            // direction MUST match
                                 phoneNumber: { in: variations },
-                                date: { gte: fuzzyWindowStart, lte: fuzzyWindowEnd },
+                                date: { gte: phase3bWindowStart, lte: fuzzyWindowEnd },
                                 duration: {                            // duration must be within ±5 s
                                     gte: Math.max(0, (rawDurationSecs / 60) - FUZZY_DUR_TOL_MIN),
                                     lte: (rawDurationSecs / 60) + FUZZY_DUR_TOL_MIN
@@ -1079,6 +1089,14 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                             },
                             orderBy: { date: 'desc' }
                         });
+
+                        // Crucial guard: If candidate already has a DIFFERENT hardwareId, it was a physically distinct call
+                        // recorded by Android's CallLog. Never merge two distinct Android CallLog entries!
+                        if (candidate) {
+                            if (!hardwareId || !candidate.hardwareId || candidate.hardwareId === hardwareId) {
+                                existingInteraction = candidate;
+                            }
+                        }
                     }
                 }
 
