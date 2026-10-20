@@ -305,7 +305,8 @@ export const createFollowUp = async (req: Request, res: Response) => {
                 followUp.assignedToId,
                 'New Follow-up Assigned',
                 `You have a new follow-up: ${followUp.subject}`,
-                'info'
+                'info',
+                { resource: 'FollowUp', id: followUp.id }
             ).catch(err => console.error('[createFollowUp] Failed to notify assignee:', err));
         }
 
@@ -408,7 +409,8 @@ export const updateFollowUp = async (req: Request, res: Response) => {
                 updatedFollowUp.assignedToId,
                 'Follow-up Assigned to You',
                 `A follow-up was assigned to you: ${updatedFollowUp.subject}`,
-                'info'
+                'info',
+                { resource: 'FollowUp', id: updatedFollowUp.id }
             ).catch(err => console.error('[updateFollowUp] Failed to notify new assignee:', err));
         }
 

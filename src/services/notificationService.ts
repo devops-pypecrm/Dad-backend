@@ -15,7 +15,13 @@ import { WhatsAppService } from './whatsAppService';
 // For now, I'll rely on a getter I will add to socket.ts.
 
 export class NotificationService {
-    static async send(recipientId: string, title: string, message: string, type: string = 'info') {
+    static async send(
+        recipientId: string,
+        title: string,
+        message: string,
+        type: string = 'info',
+        related?: { resource: string; id?: string }
+    ) {
         try {
             // 1. Save to Database
             const notification = await prisma.notification.create({
@@ -24,7 +30,9 @@ export class NotificationService {
                     title,
                     message,
                     type,
-                    isRead: false
+                    isRead: false,
+                    relatedResource: related?.resource,
+                    relatedId: related?.id
                 }
             });
 
@@ -54,7 +62,11 @@ export class NotificationService {
                 sendPushNotification(recipientId, pushUser.fcmToken, {
                     title,
                     body: message,
-                    data: { type }
+                    data: {
+                        type,
+                        ...(related?.resource ? { relatedResource: related.resource } : {}),
+                        ...(related?.id ? { relatedId: related.id } : {})
+                    }
                 }).catch((err) => console.error('[NotificationService] Unexpected push error:', err));
             }
 
