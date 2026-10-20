@@ -7,7 +7,7 @@ export function normalizeRole(role: any): string {
     if (!role) return '';
 
     if (typeof role === 'object') {
-        const roleStr = role.roleKey || role.name || '';
+        const roleStr = role.name || role.roleKey || role.id || '';
         return String(roleStr).toLowerCase().replace(/[\s-]/g, '_');
     }
 
@@ -21,12 +21,54 @@ export function checkRole(user: any, targetRoles: string | string[]): boolean {
     if (!user || !user.role) return false;
 
     const userRoleStr = normalizeRole(user.role);
+    const roleName = (user.roleName || (typeof user.role === 'object' ? user.role.name : '') || '').toLowerCase();
     const targets = Array.isArray(targetRoles) ? targetRoles : [targetRoles];
 
-    return targets.some(target => {
+    const match = targets.some(target => {
         const normalizedTarget = target.toLowerCase().replace(/[\s-]/g, '_');
-        return normalizedTarget === userRoleStr;
+        return normalizedTarget === userRoleStr || (roleName && normalizedTarget === roleName);
     });
+
+    if (match) return true;
+
+    if (targets.some(t => t.toLowerCase() === 'manager')) {
+        if (
+            userRoleStr.includes('manager') ||
+            userRoleStr === 'asm' ||
+            userRoleStr.includes('asm') ||
+            userRoleStr === 'custom_1774677200913' ||
+            roleName.includes('manager') ||
+            roleName === 'asm' ||
+            roleName.includes('asm')
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Formats a role key or role object into a human-friendly display name.
+ * e.g. "custom_1774677200913" -> "ASM"
+ *      "sales_rep" -> "Sales Rep"
+ */
+export function formatRoleName(role: any, fallbackName?: string): string {
+    if (!role) return fallbackName || '';
+    if (typeof role === 'object') {
+        return role.name || role.roleKey || fallbackName || '';
+    }
+    const r = String(role);
+    if (r === 'custom_1774677200913' || r.toLowerCase() === 'asm') return 'ASM';
+    if (fallbackName && fallbackName !== r) return fallbackName;
+    if (r === 'super_admin') return 'Super Admin';
+    if (r === 'admin') return 'Admin';
+    if (r === 'manager') return 'Manager';
+    if (r === 'sales_manager') return 'Sales Manager';
+    if (r === 'sales_rep') return 'Sales Rep';
+    if (r === 'operation_executive') return 'Operation Executive';
+    if (r.startsWith('custom_')) return fallbackName || 'Custom Role';
+    return r.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 }
 
 /**
@@ -64,10 +106,10 @@ export function isOrgAdmin(user: any): boolean {
 }
 
 /**
- * Helper for Manager check (includes Admin and Super Admin)
+ * Helper for Manager check (includes Admin, Super Admin, Sales Manager, ASM)
  */
 export function isManager(user: any): boolean {
-    return checkRole(user, ['manager', 'admin', 'super_admin']);
+    return checkRole(user, ['manager', 'admin', 'super_admin', 'sales_manager', 'branch_manager', 'asm']);
 }
 
 import prisma from '../config/prisma';

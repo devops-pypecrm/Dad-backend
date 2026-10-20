@@ -5,7 +5,7 @@ import { ResponseHandler } from '../utils/apiResponse';
 import { logger } from '../utils/logger';
 import { EmailService } from '../services/emailService';
 import { logAudit } from '../utils/auditLogger';
-import { isOrgAdmin } from '../utils/roleUtils';
+import { isOrgAdmin, isManager } from '../utils/roleUtils';
 
 /**
  * Bulk Operations Controller
@@ -113,8 +113,8 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
       }
 
       case 'update-status':
-        if (!isOrgAdmin(user)) {
-          return ResponseHandler.forbidden(res, 'Only Org Admins can perform bulk status updates');
+        if (!isOrgAdmin(user) && !isManager(user)) {
+          return ResponseHandler.forbidden(res, 'Only Admins and Managers can perform bulk status updates');
         }
 
         if (!data?.status) {
@@ -249,8 +249,8 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
       }
 
       case 'delete':
-        if (!isOrgAdmin(user)) {
-          return ResponseHandler.forbidden(res, 'Only Org Admins can perform bulk deletion');
+        if (!isOrgAdmin(user) && !isManager(user)) {
+          return ResponseHandler.forbidden(res, 'Only Org Admins and Managers can perform bulk deletion');
         }
 
         result = await prisma.lead.updateMany({

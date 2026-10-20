@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { getOrgId, getSubordinateIds, getVisibleUserIds } from '../utils/hierarchyUtils';
-import { isAdmin, isOrgAdmin } from '../utils/roleUtils';
+import { isAdmin, isOrgAdmin, formatRoleName } from '../utils/roleUtils';
 import ExcelJS from 'exceljs';
 import logger from '../utils/logger';
 
@@ -188,6 +188,7 @@ export const getUserPerformance = async (req: Request, res: Response) => {
                     id: user.id,
                     name: `${user.firstName} ${user.lastName}`,
                     role: user.role,
+                    roleName: formatRoleName(user.role),
                     dailyQuota: user.dailyLeadQuota,
                     branch: user.branch?.name || 'N/A'
                 },

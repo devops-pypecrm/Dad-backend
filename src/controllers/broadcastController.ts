@@ -139,6 +139,7 @@ export const getAllBroadcasts = async (req: Request, res: Response) => {
                 message: b.message,
                 severity: b.severity,
                 audience: b.audience,
+                active: b.active,
                 createdAt: b.createdAt,
                 createdBy: b.createdBy ? `${b.createdBy.firstName} ${b.createdBy.lastName || ''}`.trim() : null,
                 recipientCount: b._count.notifications,
@@ -231,6 +232,46 @@ export const getBroadcastStats = async (req: Request, res: Response) => {
         });
     } catch (error) {
         console.error('getBroadcastStats Error:', error);
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+/**
+ * @route   PATCH /api/super-admin/broadcasts/:id/active
+ * @desc    Withdraws (or restores) a broadcast's live popup without touching
+ *          its history — flips Broadcast.active, which
+ *          notificationController.getNotifications filters on for the
+ *          unread-popup feed. Already-read notifications are unaffected
+ *          either way (they never show again regardless), and this never
+ *          deletes/alters any Notification row, so the super admin's own
+ *          History/stats views (which query Notification rows directly,
+ *          not this flag) keep showing the broadcast exactly as before.
+ * @access  Super admin only
+ */
+export const setBroadcastActive = async (req: Request, res: Response) => {
+    try {
+        if (!(req as any).user.isSuperAdmin) {
+            return res.status(403).json({ message: 'Access denied. Super admin only.' });
+        }
+
+        const { id } = req.params;
+        const { active } = req.body;
+        if (typeof active !== 'boolean') {
+            return res.status(400).json({ message: '`active` must be a boolean' });
+        }
+
+        const broadcast = await prisma.broadcast.update({
+            where: { id },
+            data: { active }
+        }).catch(() => null);
+
+        if (!broadcast) {
+            return res.status(404).json({ message: 'Broadcast not found' });
+        }
+
+        res.json({ success: true, id: broadcast.id, active: broadcast.active });
+    } catch (error) {
+        console.error('setBroadcastActive Error:', error);
         res.status(500).json({ message: (error as Error).message });
     }
 };

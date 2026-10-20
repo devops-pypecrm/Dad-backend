@@ -88,6 +88,20 @@ export const authUser = async (req: Request, res: Response) => {
                 appVersion,
             });
 
+            let roleRecord = null;
+            if (user.role) {
+                roleRecord = await prisma.role.findFirst({
+                    where: {
+                        OR: [
+                            { roleKey: user.role, organisationId: user.organisationId },
+                            { roleKey: user.role, organisationId: null },
+                            { id: user.role }
+                        ]
+                    }
+                });
+            }
+            const roleName = roleRecord?.name || (user.role === 'custom_1774677200913' ? 'ASM' : user.role);
+
             res.json({
                 _id: user.id, // Keep _id for frontend compatibility if needed
                 id: user.id,
@@ -95,6 +109,8 @@ export const authUser = async (req: Request, res: Response) => {
                 lastName: user.lastName,
                 email: user.email,
                 role: user.role,
+                roleName,
+                roleRecord,
                 position: user.position,
                 phone: user.phone,
                 profileImage: user.profileImage,
@@ -415,6 +431,8 @@ export const getMe = async (req: Request, res: Response) => {
             lastName: user.lastName,
             email: user.email,
             role: user.role,
+            roleName: user.roleName || (user.role === 'custom_1774677200913' ? 'ASM' : user.role),
+            roleRecord: user.roleRecord,
             position: user.position,
             phone: user.phone,
             profileImage: user.profileImage,

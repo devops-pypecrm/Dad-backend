@@ -4,6 +4,8 @@ import { getOrgId, getVisibleUserIds } from '../utils/hierarchyUtils';
 import { Prisma } from '../generated/client';
 import { FollowUpService } from '../services/followUpService';
 import { logAudit } from '../utils/auditLogger';
+import { emitToOrg } from '../socket';
+import { NotificationService } from '../services/notificationService';
 
 // GET /api/follow-ups - Get all follow-up tasks for user and subordinates
 export const getFollowUps = async (req: Request, res: Response) => {
@@ -289,6 +291,22 @@ export const createFollowUp = async (req: Request, res: Response) => {
                 entityId: followUp.id,
                 details: { subject: followUp.subject }
             });
+
+            // Real-time signal for the Follow-ups page - previously a brand-new
+            // follow-up gave the assignee zero indication anything changed
+            // (no socket emit, no notification at all), so it could sit
+            // invisible in their stale cached list/Overdue count for up to
+            // this app's 5-minute TanStack Query staleTime.
+            emitToOrg(orgId, 'followup_created', { followUpId: followUp.id, assignedToId: followUp.assignedToId });
+        }
+
+        if (followUp.assignedToId && followUp.assignedToId !== user.id) {
+            NotificationService.send(
+                followUp.assignedToId,
+                'New Follow-up Assigned',
+                `You have a new follow-up: ${followUp.subject}`,
+                'info'
+            ).catch(err => console.error('[createFollowUp] Failed to notify assignee:', err));
         }
 
         res.status(201).json(followUp);
@@ -374,6 +392,24 @@ export const updateFollowUp = async (req: Request, res: Response) => {
         // Sync Lead follow-up date
         if (updatedFollowUp.leadId) {
             await FollowUpService.syncLeadFollowUp(updatedFollowUp.leadId);
+        }
+
+        // Same real-time gap as createFollowUp above - a reassignment (or any
+        // status/dueDate edit) previously never told anyone, so the new
+        // assignee's Follow-ups page could sit stale for up to 5 minutes.
+        const orgIdForEmit = getOrgId(user) || followUp.organisationId;
+        if (orgIdForEmit) {
+            emitToOrg(orgIdForEmit, 'followup_updated', { followUpId: updatedFollowUp.id, assignedToId: updatedFollowUp.assignedToId });
+        }
+
+        const wasReassigned = assignedToId !== undefined && assignedToId !== followUp.assignedToId;
+        if (wasReassigned && updatedFollowUp.assignedToId && updatedFollowUp.assignedToId !== user.id) {
+            NotificationService.send(
+                updatedFollowUp.assignedToId,
+                'Follow-up Assigned to You',
+                `A follow-up was assigned to you: ${updatedFollowUp.subject}`,
+                'info'
+            ).catch(err => console.error('[updateFollowUp] Failed to notify new assignee:', err));
         }
 
         // Transform response

@@ -28,6 +28,17 @@ export const getNotifications = async (req: Request, res: Response) => {
             whereClause.isRead = false;
         }
 
+        // Excludes notifications whose originating broadcast has been
+        // withdrawn (Broadcast.active = false) from the unread feed, so a
+        // super admin can stop a popup from still surfacing to users who
+        // haven't seen it yet without touching any Notification row —
+        // ordinary (non-broadcast) notifications have broadcastId null and
+        // are unaffected by this clause.
+        whereClause.OR = [
+            { broadcastId: null },
+            { broadcast: { active: true } }
+        ];
+
         const notifications = await prisma.notification.findMany({
             where: whereClause,
             orderBy: { createdAt: 'desc' },
@@ -36,8 +47,16 @@ export const getNotifications = async (req: Request, res: Response) => {
         });
 
         const total = await prisma.notification.count({ where: whereClause });
+        // Same withdrawn-broadcast exclusion as whereClause above — otherwise
+        // the unread badge could count a notification that will never
+        // actually be shown (its popup was withdrawn), which reads as the
+        // badge being "stuck".
         const unreadCount = await prisma.notification.count({
-            where: { recipientId: userId, isRead: false }
+            where: {
+                recipientId: userId,
+                isRead: false,
+                OR: [{ broadcastId: null }, { broadcast: { active: true } }]
+            }
         });
 
         res.json({

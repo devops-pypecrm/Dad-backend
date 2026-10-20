@@ -360,7 +360,26 @@ export const getUserById = async (req: Request, res: Response) => {
         // Exclude password
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const { password, ...userWithoutPassword } = user;
-        res.json(userWithoutPassword);
+
+        let roleRecord = null;
+        if (user.role) {
+            roleRecord = await prisma.role.findFirst({
+                where: {
+                    OR: [
+                        { roleKey: user.role, organisationId: user.organisationId },
+                        { roleKey: user.role, organisationId: null },
+                        { id: user.role }
+                    ]
+                }
+            });
+        }
+        const roleName = roleRecord?.name || (user.role === 'custom_1774677200913' ? 'ASM' : user.role);
+
+        res.json({
+            ...userWithoutPassword,
+            roleName,
+            roleRecord
+        });
     } catch (error) {
         logger.error('getUserById Error', error, 'UserController');
         res.status(500).json({ message: (error as Error).message });

@@ -137,7 +137,7 @@ model User {
   resetPasswordExpire            DateTime?
   tokenVersion                   Int                      @default(0)
   workingHours                   Json?
-  timezone                       String                   @default("UTC")
+  timezone                       String                   @default("Asia/Kolkata")
   createdAt                      DateTime                 @default(now())
   updatedAt                      DateTime                 @updatedAt
   isDeleted                      Boolean                  @default(false)
@@ -304,6 +304,13 @@ model Broadcast {
   severity       String         @default("info")
   audience       String // 'all' | 'admins' | 'self'
   recipientCount Int            @default(0)
+  // Defaults true so every broadcast sent before this field existed keeps
+  // behaving exactly as before. Once a super admin flips this false, the
+  // popup stops surfacing to anyone who hasn't read it yet (see
+  // notificationController.getNotifications) while the broadcast stays
+  // fully visible in the super-admin History/stats views, which query
+  // Notification rows directly and never check this flag.
+  active         Boolean        @default(true)
   createdById    String?
   createdBy      User?          @relation("BroadcastSender", fields: [createdById], references: [id])
   createdAt      DateTime       @default(now())

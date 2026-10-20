@@ -16,6 +16,7 @@ import {
     sendBroadcast,
     getAllBroadcasts,
     getBroadcastStats,
+    setBroadcastActive,
     broadcastToOrgAdmins
 } from '../controllers/broadcastController';
 import { deleteOrganisation, restoreOrganisation, permanentlyDeleteOrganisation } from '../controllers/organisationController';
@@ -111,6 +112,7 @@ router.post('/broadcast-notification', protect, broadcastToOrgAdmins);
 router.post('/broadcasts', protect, sendBroadcast);
 router.get('/broadcasts', protect, getAllBroadcasts);
 router.get('/broadcasts/:id/stats', protect, getBroadcastStats);
+router.patch('/broadcasts/:id/active', protect, setBroadcastActive);
 
 // Helper (PypeCRM Helper / Dad-call-recorder) activity log monitoring
 router.get('/helper-logs', protect, getHelperActivityLogs);

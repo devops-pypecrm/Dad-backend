@@ -1,4 +1,5 @@
 import prisma from '../config/prisma';
+import { isManager } from './roleUtils';
 
 /**
  * Recursively fetches all subordinate user IDs for a given user.
@@ -192,7 +193,7 @@ export const getLeadVisibilityFilter = async (user: any, isSuperAdmin: boolean =
 
     if (user.role === 'admin') {
         orConditions.push({ assignedToId: null });
-    } else if (user.role === 'manager') {
+    } else if (isManager(user)) {
         orConditions.push({
             AND: [
                 { assignedToId: null },

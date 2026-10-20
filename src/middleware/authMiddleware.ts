@@ -3,7 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import prisma from '../config/prisma';
 import crypto from 'crypto';
 import { getOrgId } from '../utils/hierarchyUtils';
-import { isSuperAdmin as checkSuperAdmin, normalizeRole } from '../utils/roleUtils';
+import { isSuperAdmin as checkSuperAdmin, normalizeRole, isManager } from '../utils/roleUtils';
 import { touchSessionLastActive } from '../services/sessionService';
 
 export interface AuthRequest extends Request {
@@ -73,14 +73,28 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
                 where: { managerId: user.id, isDeleted: false }
             });
 
+            // Attach role info if custom or known role
+            let roleRecord = null;
+            if (user.role) {
+                roleRecord = await prisma.role.findFirst({
+                    where: {
+                        OR: [
+                            { roleKey: user.role, organisationId: user.organisationId },
+                            { roleKey: user.role, organisationId: null },
+                            { id: user.role }
+                        ]
+                    }
+                });
+            }
+
             // Attach user to request
             req.user = {
                 ...userWithoutPassword,
+                roleName: roleRecord?.name || (user.role === 'custom_1774677200913' ? 'ASM' : user.role),
+                roleRecord,
+                permissions: roleRecord?.permissions || (user as any).permissions || [],
                 isSuperAdmin: checkSuperAdmin(user),
                 isBranchManager: !!branchManaged,
-                // Lets `getSessions` mark which row in the Devices list is
-                // "this device" — null for a pre-this-feature token, same
-                // as everywhere else sessionId is handled.
                 sessionId
             };
 
@@ -161,9 +175,17 @@ export const admin = (req: AuthRequest, res: Response, next: NextFunction) => {
 
 export const authorize = (...roles: string[]) => {
     return (req: AuthRequest, res: Response, next: NextFunction) => {
-        const userRole = req.user ? normalizeRole(req.user.role) : '';
+        const user = req.user;
+        const userRole = user ? normalizeRole(user.role) : '';
+        const userRoleName = (user as any)?.roleName ? normalizeRole((user as any).roleName) : '';
         const normRoles = roles.map(r => r.toLowerCase().replace(/[\s-]/g, '_'));
-        if (!req.user || !normRoles.includes(userRole)) {
+
+        let isAuthorized = normRoles.includes(userRole) || (userRoleName && normRoles.includes(userRoleName));
+        if (!isAuthorized && normRoles.includes('manager')) {
+            isAuthorized = isManager(user);
+        }
+
+        if (!req.user || !isAuthorized) {
             return res.status(403).json({ message: `User role ${req.user?.role} is not authorized` });
         }
         next();
