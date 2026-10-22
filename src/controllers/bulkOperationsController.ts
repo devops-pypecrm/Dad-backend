@@ -51,6 +51,15 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           return ResponseHandler.validationError(res, 'Assigned user does not belong to your organisation');
         }
 
+        // Snapshot old owners BEFORE the update - needed for the LeadHistory
+        // rows below (this endpoint previously wrote none at all, so a
+        // reassignment through it was invisible on the per-lead Ownership
+        // History tab and the org-wide Lead Transfer Log).
+        const leadsBeforeAssign = await prisma.lead.findMany({
+          where: { id: { in: leadIds }, organisationId, isDeleted: false },
+          select: { id: true, assignedToId: true }
+        });
+
         result = await prisma.lead.updateMany({
           where: {
             id: { in: leadIds },
@@ -62,6 +71,22 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
             updatedAt: new Date()
           }
         });
+
+        {
+          const assignActorName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'a user';
+          const historyRows = leadsBeforeAssign
+            .filter((l) => l.assignedToId !== data.assignedToId)
+            .map((l) => ({
+              leadId: l.id,
+              oldOwnerId: l.assignedToId,
+              newOwnerId: data.assignedToId,
+              changedById: userId,
+              reason: data.reason || `Bulk reassignment by ${assignActorName}`
+            }));
+          if (historyRows.length > 0) {
+            await prisma.leadHistory.createMany({ data: historyRows });
+          }
+        }
 
         // Reassign all associated records like single-lead and bulkAssignLeads do
         await Promise.all([

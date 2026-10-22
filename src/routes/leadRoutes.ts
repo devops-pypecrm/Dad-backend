@@ -1,5 +1,5 @@
 import express from 'express';
-import { getLeads, createLead, getLeadById, updateLead, deleteLead, createBulkLeads, bulkAssignLeads, convertLead, getViolations, submitExplanation, getLeadHistory, getPendingFollowUpsCount, generateAIResponse, suggestNextStep, getReEnquiryLeads, getDuplicateLeads, syncToGallabox, getUnattendedLeads, getNoActivityLeads, getReEnquiryHistory, splitReEnquiryIntoLead } from '../controllers/leadController';
+import { getLeads, createLead, getLeadById, updateLead, deleteLead, createBulkLeads, bulkAssignLeads, convertLead, getViolations, submitExplanation, getLeadHistory, getLeadTransferLog, getPendingFollowUpsCount, generateAIResponse, suggestNextStep, getReEnquiryLeads, getDuplicateLeads, syncToGallabox, getUnattendedLeads, getNoActivityLeads, getReEnquiryHistory, splitReEnquiryIntoLead } from '../controllers/leadController';
 import { protect, admin, authorize } from '../middleware/authMiddleware';
 import { checkPlanLimits } from '../middleware/subscriptionMiddleware';
 
@@ -9,6 +9,7 @@ const router = express.Router();
 router.post('/bulk', protect, createBulkLeads as any);
 router.post('/bulk-assign', protect, bulkAssignLeads as any);
 router.get('/violations', protect, getViolations as any); // New Route
+router.get('/transfer-log', protect, getLeadTransferLog as any); // Org-wide lead ownership transfer log
 router.post('/explanation', protect, submitExplanation as any); // New Route
 router.get('/pending-follow-ups', protect, getPendingFollowUpsCount as any);
 router.get('/re-enquiries', protect, authorize('admin', 'manager', 'org_admin', 'super_admin', 'operation_executive'), getReEnquiryLeads as any);

@@ -689,14 +689,18 @@ export const updateLead = async (req: express.Request, res: express.Response) =>
                 }
             }
 
-            // Track History
+            // Track History. The reason is kept self-contained (names the
+            // actor inline) rather than relying on a reader to separately
+            // join changedById -> User, since this row is read in bulk on
+            // the org-wide Lead Transfer Log, not just one lead at a time.
             if (currentLead.assignedToId !== targetUserId) {
+                const actorName = `${requester.firstName || ''} ${requester.lastName || ''}`.trim() || 'a user';
                 historyData = {
                     leadId,
                     oldOwnerId: currentLead.assignedToId,
                     newOwnerId: targetUserId,
                     changedById: requester.id,
-                    reason: req.body.reason || 'Manual Assignment'
+                    reason: req.body.reason || `Manual reassignment by ${actorName}`
                 };
             }
 
@@ -1520,13 +1524,15 @@ export const bulkAssignLeads = async (req: express.Request, res: express.Respons
             }
         });
 
-        // Create history records for each lead
+        // Create history records for each lead. Self-contained reason (names
+        // the actor inline) - see the single-lead update path's comment for why.
+        const bulkActorName = `${requester.firstName || ''} ${requester.lastName || ''}`.trim() || 'a user';
         const historyRecords = currentLeads.map(lead => ({
             leadId: lead.id,
             oldOwnerId: lead.assignedToId,
             newOwnerId: assignedTo,
             changedById: requester.id,
-            reason: reason || 'Bulk Assignment'
+            reason: reason || `Bulk reassignment by ${bulkActorName}`
         }));
 
         if (historyRecords.length > 0) {
@@ -2121,6 +2127,99 @@ export const getViolations = async (req: express.Request, res: express.Response)
     } catch (error) {
         logDebug(`getViolations CRASHED: ${(error as Error).message}\nStack: ${(error as Error).stack}`);
         console.error('[getViolations] Error:', error);
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// GET /api/leads/transfer-log - Org-wide, paginated feed of every lead
+// ownership change (manual, bulk, auto-assignment, SLA rotation, shuffler),
+// for the Lead Transfer Log page. Distinct from getViolations above, which
+// only surfaces leads flagged `rotationViolation: true` - this covers every
+// `LeadHistory` row that actually represents an ownership change
+// (`newOwnerId` set), regardless of cause.
+export const getLeadTransferLog = async (req: express.Request, res: express.Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId && !isSuperAdmin(user)) return res.status(403).json({ message: 'No organisation' });
+
+        const page = Number(req.query.page) || 1;
+        const pageSize = Number(req.query.pageSize) || 15;
+        const search = (req.query.search as string || '').trim();
+
+        const leadFilter: any = { isDeleted: false };
+        if (!isSuperAdmin(user)) leadFilter.organisationId = orgId;
+
+        if (search) {
+            leadFilter.OR = [
+                { firstName: { contains: search, mode: 'insensitive' } },
+                { lastName: { contains: search, mode: 'insensitive' } },
+                { company: { contains: search, mode: 'insensitive' } },
+                { phone: { contains: search, mode: 'insensitive' } }
+            ];
+        }
+
+        const where: any = {
+            newOwnerId: { not: null }, // only real ownership-change rows (excludes e.g. the status-only "Lead Converted" entry)
+            lead: leadFilter
+        };
+
+        // Branch managers / reps see only transfers touching someone visible
+        // to them (self + subordinates) - admins/org admins see everything.
+        if (!isAdmin(user) && !isOrgAdmin(user) && !isSuperAdmin(user)) {
+            let visibleUserIds: string[] = [];
+            try {
+                visibleUserIds = await getVisibleUserIds(user.id);
+            } catch {
+                visibleUserIds = [user.id];
+            }
+            where.OR = [
+                { oldOwnerId: { in: visibleUserIds } },
+                { newOwnerId: { in: visibleUserIds } }
+            ];
+        }
+
+        if (req.query.startDate || req.query.endDate) {
+            const dateFilter: any = {};
+            if (req.query.startDate) dateFilter.gte = new Date(req.query.startDate as string);
+            if (req.query.endDate) dateFilter.lte = new Date(req.query.endDate as string);
+            where.createdAt = dateFilter;
+        }
+
+        const [history, total, manualCount, todayCount] = await Promise.all([
+            prisma.leadHistory.findMany({
+                where,
+                include: {
+                    lead: { select: { id: true, firstName: true, lastName: true, company: true, phone: true } },
+                    oldOwner: { select: { id: true, firstName: true, lastName: true } },
+                    newOwner: { select: { id: true, firstName: true, lastName: true } },
+                    changedBy: { select: { id: true, firstName: true, lastName: true } }
+                },
+                orderBy: { createdAt: 'desc' },
+                skip: (page - 1) * pageSize,
+                take: pageSize
+            }),
+            prisma.leadHistory.count({ where }),
+            prisma.leadHistory.count({ where: { ...where, reason: { contains: 'by ', mode: 'insensitive' } } }),
+            prisma.leadHistory.count({
+                where: { ...where, createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } }
+            })
+        ]);
+
+        res.json({
+            history,
+            page,
+            pages: Math.ceil(total / pageSize),
+            total,
+            stats: {
+                total,
+                manual: manualCount,
+                automatic: total - manualCount,
+                today: todayCount
+            }
+        });
+    } catch (error) {
+        console.error('[getLeadTransferLog] Error:', error);
         res.status(500).json({ message: (error as Error).message });
     }
 };

@@ -193,15 +193,20 @@ export const runShuffler = async () => {
                         data: { ownerId: targetUser.id, previousOwnerId: lead.assignedToId }
                     });
 
-                    // Log history
+                    // Log history. Was using fieldName/oldValue/newValue
+                    // (plain strings, no FK) instead of oldOwnerId/newOwnerId
+                    // like every other writer - harmless for storage, but it
+                    // meant the per-lead Ownership History tab and the
+                    // org-wide Lead Transfer Log couldn't resolve owner
+                    // names for shuffler-caused transfers (their `oldOwner`/
+                    // `newOwner` include relies on those FK columns).
                     await prisma.leadHistory.create({
                         data: {
                             leadId: lead.id,
-                            fieldName: 'assignedToId',
-                            oldValue: lead.assignedToId,
-                            newValue: targetUser.id,
-                            changedById: null, // System action
-                            reason: 'Automatic lead shuffler execution'
+                            oldOwnerId: lead.assignedToId,
+                            newOwnerId: targetUser.id,
+                            changedById: null, // System action - scheduled auto-shuffle
+                            reason: `Auto-shuffled by system (scheduled shuffler for "${org.name}")`
                         }
                     });
 
@@ -247,7 +252,7 @@ export const runShuffler = async () => {
     }
 };
 
-export const forceShuffleOrg = async (organisationId: string) => {
+export const forceShuffleOrg = async (organisationId: string, triggeredById?: string) => {
     try {
         console.log(`[ShufflerService] Force starting shuffle check for Org: ${organisationId}`);
 
@@ -262,6 +267,15 @@ export const forceShuffleOrg = async (organisationId: string) => {
         if (!org.shufflerConfig) {
             return { success: false, message: 'No shuffler config found for this organization.' };
         }
+
+        // Resolved once up front so the LeadHistory reason below is
+        // self-contained (names the triggering admin inline).
+        const triggeringAdmin = triggeredById
+            ? await prisma.user.findUnique({ where: { id: triggeredById }, select: { firstName: true, lastName: true } })
+            : null;
+        const forceShuffleReason = triggeringAdmin
+            ? `Manual shuffle triggered by ${triggeringAdmin.firstName || ''} ${triggeringAdmin.lastName || ''}`.trim()
+            : `Manual shuffle triggered for "${org.name}"`;
 
         const config = org.shufflerConfig as any;
         
@@ -406,15 +420,17 @@ export const forceShuffleOrg = async (organisationId: string) => {
                     data: { assignedToId: targetUser.id, createdById: targetUser.id }
                 });
 
-                // Log history
+                // Log history. Same oldOwnerId/newOwnerId fix as the
+                // scheduled path above, plus this now actually records who
+                // triggered it (changedById was always null before, even
+                // though a real admin clicked "Shuffle Now").
                 await prisma.leadHistory.create({
                     data: {
                         leadId: lead.id,
-                        fieldName: 'assignedToId',
-                        oldValue: lead.assignedToId,
-                        newValue: targetUser.id,
-                        changedById: null, // Force shuffle action
-                        reason: 'Force lead shuffler execution'
+                        oldOwnerId: lead.assignedToId,
+                        newOwnerId: targetUser.id,
+                        changedById: triggeredById || null,
+                        reason: forceShuffleReason
                     }
                 });
 

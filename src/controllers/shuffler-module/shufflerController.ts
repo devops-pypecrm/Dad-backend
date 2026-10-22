@@ -9,8 +9,11 @@ export const triggerShuffleNow = async (req: Request, res: Response) => {
         const orgId = getOrgId(req.user);
         if (!orgId) return res.status(404).json({ message: 'Organisation not found' });
 
-        // Kick off the shuffle in the background without awaiting it
-        forceShuffleOrg(orgId).catch(err => {
+        // Kick off the shuffle in the background without awaiting it. Pass
+        // the triggering admin through so the resulting LeadHistory rows
+        // record who actually fired this (previously `changedById: null`
+        // even though a real person clicked the button).
+        forceShuffleOrg(orgId, (req as any).user?.id).catch(err => {
             console.error('Background shuffle error:', err);
         });
 
