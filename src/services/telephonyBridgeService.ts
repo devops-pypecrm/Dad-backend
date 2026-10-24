@@ -24,6 +24,14 @@ const BRIDGE_NUMBERS = (process.env.PLATFORM_TWILIO_BRIDGE_NUMBERS ?? '')
 
 let roundRobinIndex = 0;
 
+/** Last 10 digits of every pool number — lets callers recognise (and skip)
+ * the bridge leg itself if it ever shows up as a "call" in the CRM. */
+export function isBridgeNumber(raw: string | null | undefined): boolean {
+    if (!raw) return false;
+    const last10 = normalizePhone(raw);
+    return last10.length >= 10 && BRIDGE_NUMBERS.some((n) => normalizePhone(n) === last10);
+}
+
 export function hasBridgeNumbers(): boolean {
     return BRIDGE_NUMBERS.length > 0;
 }
