@@ -1,65 +1,11 @@
 import { Request, Response } from 'express';
-import fs from 'fs';
-import path from 'path';
-import axios from 'axios';
 import twilio from 'twilio';
 import prisma from '../config/prisma';
 import { getOrgId } from '../utils/hierarchyUtils';
 import { synchronizeDurations } from '../utils/callUtils';
-import { resolveBridgeConfigForOrg, findAgentByPhone, isBridgeNumber } from '../services/telephonyBridgeService';
+import { resolveBridgeConfigForOrg, findAgentByPhone } from '../services/telephonyBridgeService';
 
 const VoiceResponse = twilio.twiml.VoiceResponse;
-
-const recordingsDir = path.join(__dirname, '../../uploads/recordings');
-
-/** Rejects webhook calls that didn't come from Twilio. These two endpoints
- * are public and write recordings onto CRM records, so an unsigned request
- * must not be able to forge one. Enforced whenever the platform auth token
- * is configured (it has to be for the recording download anyway); without it
- * the check is skipped with a warning so a half-configured pilot still runs. */
-export const verifyTwilioSignature = (req: Request, res: Response, next: () => void) => {
-    const authToken = process.env.PLATFORM_TWILIO_AUTH_TOKEN;
-    if (!authToken) {
-        console.warn('[TelephonyBridge] PLATFORM_TWILIO_AUTH_TOKEN not set — webhook signature NOT verified');
-        return next();
-    }
-    const signature = req.header('x-twilio-signature') ?? '';
-    const proto = (req.header('x-forwarded-proto') ?? req.protocol).split(',')[0];
-    const base = process.env.PUBLIC_API_URL?.replace(/\/$/, '') ?? `${proto}://${req.get('host')}`;
-    const url = `${base}${req.originalUrl}`;
-    if (!twilio.validateRequest(authToken, signature, url, req.body ?? {})) {
-        console.warn(`[TelephonyBridge] Rejected webhook with invalid Twilio signature: ${req.originalUrl}`);
-        res.sendStatus(403);
-        return;
-    }
-    next();
-};
-
-/** Twilio recording URLs need the account's credentials to fetch, so the
- * CRM's player can't use them directly. Pull the mp3 down into the same
- * uploads/recordings folder every other call recording lives in and store
- * the local path, so playback/delete/export work exactly as they already do. */
-async function downloadRecording(recordingUrl: string, recordingSid: string): Promise<string | null> {
-    const sid = process.env.PLATFORM_TWILIO_ACCOUNT_SID;
-    const token = process.env.PLATFORM_TWILIO_AUTH_TOKEN;
-    if (!sid || !token || !/^[A-Za-z0-9]+$/.test(recordingSid)) return null;
-    try {
-        fs.mkdirSync(recordingsDir, { recursive: true });
-        const filename = `bridge-${recordingSid}.mp3`;
-        const response = await axios.get(`${recordingUrl}.mp3`, {
-            auth: { username: sid, password: token },
-            responseType: 'arraybuffer',
-            timeout: 60000,
-        });
-        fs.writeFileSync(path.join(recordingsDir, filename), Buffer.from(response.data));
-        return `/uploads/recordings/${filename}`;
-    } catch (error) {
-        console.error('[TelephonyBridge] Recording download failed:', (error as Error).message);
-        return null;
-    }
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Server-number/conference-bridge call recording — see
@@ -115,22 +61,12 @@ export const handleBridgeVoice = async (req: Request, res: Response) => {
         }
 
         const callbackUrl = `/api/telephony/bridge/recording-status?agentId=${agent.id}&orgId=${agent.organisationId}`;
-        // A one-person conference rather than <Record>: <Record> stops on 5s
-        // of silence or on ANY keypad digit (IVR menus, "press 1"), which
-        // would cut recordings short mid-call. A conference records for as
-        // long as the line stays up and ends when the merged call does.
-        twiml.dial().conference(
-            {
-                record: 'record-from-start',
-                beep: 'false',
-                startConferenceOnEnter: true,
-                endConferenceOnExit: true,
-                recordingStatusCallback: callbackUrl,
-                recordingStatusCallbackEvent: ['completed'],
-                recordingStatusCallbackMethod: 'POST',
-            },
-            `bridge-${req.body.CallSid ?? Date.now()}`,
-        );
+        twiml.record({
+            action: callbackUrl,
+            recordingStatusCallback: callbackUrl,
+            maxLength: 3600,
+            playBeep: false,
+        });
         res.type('text/xml').send(twiml.toString());
     } catch (error) {
         console.error('[TelephonyBridge] Voice webhook error:', error);
@@ -140,37 +76,32 @@ export const handleBridgeVoice = async (req: Request, res: Response) => {
 };
 
 // Recording-finished callback. `agentId`/`orgId` come from the query
-// params `handleBridgeVoice` set on the way in.
+// params `handleBridgeVoice` set on the way in — re-deriving them from
+// `From` again here would work too, but passing them through explicitly
+// avoids doing the same phone lookup twice and any window for it to
+// resolve differently between the two webhook calls.
 export const handleBridgeRecordingStatus = async (req: Request, res: Response) => {
     const { agentId, orgId } = req.query;
-    const { RecordingUrl, RecordingDuration, RecordingSid } = req.body;
+    const { RecordingUrl, RecordingDuration, CallDuration } = req.body;
 
-    if (!agentId || typeof agentId !== 'string' || !orgId || typeof orgId !== 'string') {
-        return res.status(400).send('Missing agentId/orgId');
-    }
-    // Nothing recorded (hung up before the merge completed) — not an error.
-    if (!RecordingUrl || !RecordingSid) return res.sendStatus(200);
+    try {
+        if (!agentId || typeof agentId !== 'string' || !orgId || typeof orgId !== 'string') {
+            return res.status(400).send('Missing agentId/orgId');
+        }
+        if (!RecordingUrl) {
+            // The record action fires even on a call that never actually
+            // recorded anything (e.g. hung up before merge completed) —
+            // nothing to correlate, not an error.
+            return res.sendStatus(200);
+        }
 
-    // Answer Twilio right away; the download and the wait for the call's
-    // Interaction row can take a while and Twilio retries slow callbacks.
-    res.sendStatus(200);
-    attachRecording(agentId, orgId, RecordingUrl, RecordingSid, parseInt(RecordingDuration, 10) || null).catch((error) =>
-        console.error('[TelephonyBridge] attachRecording error:', error),
-    );
-};
-
-/** Recording finished at about the same moment the dialer syncs the call
- * itself, so the Interaction row may not exist yet — keep looking for ~4
- * minutes before giving up and logging the recording as orphaned. */
-async function attachRecording(agentId: string, orgId: string, recordingUrl: string, recordingSid: string, durationSecs: number | null) {
-    const localUrl = (await downloadRecording(recordingUrl, recordingSid)) ?? recordingUrl;
-
-    // Twilio retries callbacks: don't attach the same recording twice.
-    if (await prisma.interaction.findFirst({ where: { recordingUrl: localUrl }, select: { id: true } })) return;
-
-    for (let attempt = 0; attempt < 9; attempt++) {
-        const windowStart = new Date(Date.now() - 2 * 60 * 60 * 1000);
-        const candidates = await prisma.interaction.findMany({
+        // Closest-in-time Interaction created by this agent without a
+        // recording yet — mirrors the dedup spirit of androidController.ts
+        // (heal an existing row rather than create a duplicate), just
+        // matched on (agent, recency) instead of (callSessionId/
+        // hardwareId) since the bridge leg has neither.
+        const windowStart = new Date(Date.now() - 5 * 60 * 1000);
+        const candidate = await prisma.interaction.findFirst({
             where: {
                 organisationId: orgId,
                 createdById: agentId,
@@ -179,79 +110,29 @@ async function attachRecording(agentId: string, orgId: string, recordingUrl: str
                 date: { gte: windowStart },
             },
             orderBy: { date: 'desc' },
-            take: 5,
         });
-        // Never attach to the bridge leg's own call record.
-        const match = candidates.find((c) => !isBridgeNumber(c.phoneNumber));
-        if (match) {
-            const data: any = { recordingUrl: localUrl };
-            if (durationSecs) {
-                data.recordingDuration = durationSecs;
-                synchronizeDurations(data);
-            }
-            await prisma.interaction.update({ where: { id: match.id }, data });
-            console.log(`[TelephonyBridge] Attached cloud recording to Interaction ${match.id} for agent ${agentId}`);
-            return;
+
+        if (!candidate) {
+            console.warn(`[TelephonyBridge] No recent un-recorded call Interaction for agent ${agentId} — recording orphaned: ${RecordingUrl}`);
+            return res.sendStatus(200);
         }
-        await sleep(30_000);
-    }
-    console.warn(`[TelephonyBridge] No un-recorded call Interaction for agent ${agentId} — recording orphaned: ${localUrl}`);
-}
 
-// The dialer reports how each production merge attempt ended (merged / bridge
-// never answered / carrier refused the merge) with the SIM and phone model.
-// This is how real carrier coverage is measured from live traffic.
-export const reportBridgeOutcome = async (req: Request, res: Response) => {
-    try {
-        const user = (req as any).user;
-        const orgId = getOrgId(user);
-        if (!orgId) return res.status(400).json({ message: 'Organisation not found' });
-        const { outcome, simLabel, device, androidSdk } = req.body;
-        if (typeof outcome !== 'string' || outcome.length > 40) return res.status(400).json({ message: 'Invalid outcome' });
+        const data: any = { recordingUrl: RecordingUrl };
+        if (RecordingDuration) {
+            data.recordingDuration = parseInt(RecordingDuration, 10);
+            synchronizeDurations(data);
+        }
+        if (CallDuration) {
+            data.hardwareDuration = parseInt(CallDuration, 10);
+            synchronizeDurations(data);
+        }
 
-        await prisma.auditLog.create({
-            data: {
-                action: 'BRIDGE_OUTCOME',
-                entity: 'CallRecordingBridge',
-                actorId: user.id,
-                organisationId: orgId,
-                details: { outcome, simLabel: simLabel ?? null, device: device ?? null, androidSdk: androidSdk ?? null },
-            },
-        });
-        res.sendStatus(204);
+        await prisma.interaction.update({ where: { id: candidate.id }, data });
+        console.log(`[TelephonyBridge] Attached cloud recording to Interaction ${candidate.id} for agent ${agentId}`);
+        res.sendStatus(200);
     } catch (error) {
-        console.error('[TelephonyBridge] reportBridgeOutcome error:', error);
+        console.error('[TelephonyBridge] Recording status webhook error:', error);
         res.sendStatus(500);
-    }
-};
-
-// Success rate of the last 30 days of attempts, by SIM and by phone model.
-export const getBridgeOutcomeSummary = async (req: Request, res: Response) => {
-    try {
-        const orgId = getOrgId((req as any).user);
-        if (!orgId) return res.status(400).json({ message: 'Organisation not found' });
-        const rows = await prisma.auditLog.findMany({
-            where: { organisationId: orgId, action: 'BRIDGE_OUTCOME', createdAt: { gte: new Date(Date.now() - 30 * 86400000) } },
-            select: { details: true },
-            take: 10000,
-        });
-        const tally = (key: 'simLabel' | 'device') => {
-            const out: Record<string, { attempts: number; merged: number; outcomes: Record<string, number> }> = {};
-            for (const { details } of rows) {
-                const d = (details ?? {}) as any;
-                const k = String(d[key] ?? 'unknown');
-                const entry = (out[k] ??= { attempts: 0, merged: 0, outcomes: {} });
-                entry.attempts += 1;
-                if (d.outcome === 'MERGED') entry.merged += 1;
-                entry.outcomes[d.outcome] = (entry.outcomes[d.outcome] ?? 0) + 1;
-            }
-            return out;
-        };
-        const merged = rows.filter((r) => (r.details as any)?.outcome === 'MERGED').length;
-        res.json({ attempts: rows.length, merged, successRate: rows.length ? merged / rows.length : null, bySim: tally('simLabel'), byDevice: tally('device') });
-    } catch (error) {
-        console.error('[TelephonyBridge] getBridgeOutcomeSummary error:', error);
-        res.status(500).json({ message: (error as Error).message });
     }
 };
 
