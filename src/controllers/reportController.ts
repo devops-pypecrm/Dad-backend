@@ -1154,7 +1154,10 @@ export const getDailyReport = async (req: Request, res: Response) => {
             logger.warn(`getDailyReport: Organisation ID missing for user ${user.email}`, 'ReportController');
             return res.status(400).json({ message: 'Organisation ID is required' });
         }
-        const { branchId, date, startDate, endDate } = req.query;
+        const { branchId, date, startDate, endDate, userIds } = req.query;
+        const filterUserIds = typeof userIds === 'string' && userIds.trim()
+            ? userIds.split(',').map(s => s.trim()).filter(Boolean)
+            : null;
 
         let startOfDay: Date;
         let endOfDay: Date;
@@ -1207,6 +1210,9 @@ export const getDailyReport = async (req: Request, res: Response) => {
         }
 
         if (branchId) where.branchId = branchId as string;
+        if (filterUserIds) {
+            where.id = where.id ? { in: filterUserIds.filter(id => (where.id.in as string[]).includes(id)) } : { in: filterUserIds };
+        }
 
         const users = await prisma.user.findMany({
             where,
@@ -1225,7 +1231,8 @@ export const getDailyReport = async (req: Request, res: Response) => {
                 totalCalls,
                 connectedCalls,
                 convertedLeads,
-                lostLeads
+                lostLeads,
+                userCalls
             ] = await Promise.all([
                 // Total Calls
                 prisma.interaction.count({
@@ -1273,8 +1280,24 @@ export const getDailyReport = async (req: Request, res: Response) => {
                         newValue: { in: ['lost', 'dead'] },
                         createdAt: { gte: startOfDay, lte: endOfDay }
                     }
+                }),
+                // Raw call rows, just for this user, to total up call duration below
+                prisma.interaction.findMany({
+                    where: {
+                        createdById: u.id,
+                        type: 'call',
+                        callStatus: { not: 'initiated' },
+                        date: { gte: startOfDay, lte: endOfDay },
+                        isDeleted: false
+                    },
+                    select: { hardwareDuration: true, recordingDuration: true, duration: true }
                 })
             ]);
+
+            const totalDuration = userCalls.reduce((sum, c) => {
+                const d = c.hardwareDuration || c.recordingDuration || Math.round((c.duration || 0) * 60);
+                return sum + d;
+            }, 0);
 
             return {
                 id: u.id,
@@ -1284,7 +1307,8 @@ export const getDailyReport = async (req: Request, res: Response) => {
                 totalConnected: connectedCalls,
                 totalUnconnected: totalCalls - connectedCalls,
                 totalConverted: convertedLeads,
-                totalLost: lostLeads
+                totalLost: lostLeads,
+                totalDuration
             };
         }));
 
@@ -1303,6 +1327,12 @@ export const getDailyReport = async (req: Request, res: Response) => {
 
         if (branchId) {
             summaryWhere.createdBy = { branchId: branchId as string };
+        }
+
+        if (filterUserIds) {
+            summaryWhere.createdById = summaryWhere.createdById
+                ? { in: filterUserIds.filter(id => (summaryWhere.createdById.in as string[]).includes(id)) }
+                : { in: filterUserIds };
         }
 
         const totalStats = await prisma.interaction.findMany({
