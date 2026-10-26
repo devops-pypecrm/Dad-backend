@@ -152,10 +152,13 @@ export const getUserPerformance = async (req: Request, res: Response) => {
                         ...(Object.keys(dateFilter).length ? { createdAt: dateFilter } : {})
                     }
                 }),
+                // "Converted" here means actually won, not converted+won+lost
+                // lumped together (which previously inflated this count with
+                // leads that were actually lost).
                 prisma.lead.count({
                     where: {
                         assignedToId: user.id,
-                        status: { in: ['converted', 'won', 'lost'] },
+                        status: 'won',
                         isDeleted: false,
                         ...(Object.keys(dateFilter).length ? { updatedAt: dateFilter } : {})
                     }
@@ -1263,12 +1266,15 @@ export const getDailyReport = async (req: Request, res: Response) => {
                         isDeleted: false
                     }
                 }),
-                // Total Converted (Status became 'converted' today)
+                // Total Won (Status became 'won' today - set when an Opportunity
+                // closes as closed_won, see leadController's effectiveStage sync.
+                // Previously counted newValue: 'converted', which isn't the actual
+                // terminal "deal won" status and was almost always 0/wrong.
                 prisma.leadHistory.count({
                     where: {
                         changedById: u.id,
                         fieldName: 'status',
-                        newValue: 'converted',
+                        newValue: 'won',
                         createdAt: { gte: startOfDay, lte: endOfDay }
                     }
                 }),
