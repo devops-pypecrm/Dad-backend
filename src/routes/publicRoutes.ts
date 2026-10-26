@@ -8,6 +8,8 @@ import { getPublicTrainingVideos } from '../controllers/trainingVideoController'
 import { ZapierWebhookService } from '../services/zapierWebhookService';
 import { getPublicDailySummary } from '../controllers/dailySummaryController';
 import { submitEnquiry } from '../controllers/enquiryController';
+import { chatWithPublicAssistant } from '../controllers/publicChatController';
+import rateLimit from 'express-rate-limit';
 
 const router = express.Router();
 
@@ -96,6 +98,20 @@ router.post('/meta/deauthorize', express.urlencoded({ extended: true }), async (
  * @desc Get active FAQs for landing page
  */
 router.get('/faqs', getPublicFAQs);
+
+/**
+ * @route POST /api/public/faq-chat
+ * @desc Landing-page "Ask our AI" assistant (anonymous, per-IP rate limited because it
+ * spends Gemini quota). Same knowledge base as the in-app Training Assistant.
+ */
+const faqChatLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'You have asked a lot of questions — please try again later or contact our team.' },
+});
+router.post('/faq-chat', faqChatLimiter, chatWithPublicAssistant);
 
 /**
  * @route GET /api/public/training-videos
