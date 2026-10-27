@@ -531,10 +531,32 @@ export const updateOpportunity = async (req: Request, res: Response) => {
             opportunity.leadId &&
             (opportunityUpdates.stage === 'closed_won' || opportunityUpdates.stage === 'closed_lost')
         ) {
-            await prisma.lead.updateMany({
+            const newLeadStatus = opportunityUpdates.stage === 'closed_won' ? 'won' : 'lost';
+            const syncedLead = await prisma.lead.findFirst({
                 where: { id: opportunity.leadId, status: 'converted' },
-                data: { status: opportunityUpdates.stage === 'closed_won' ? 'won' : 'lost' }
+                select: { id: true, status: true }
             });
+            if (syncedLead) {
+                await prisma.lead.update({
+                    where: { id: syncedLead.id },
+                    data: { status: newLeadStatus }
+                });
+                // This updateMany previously changed Lead.status with no LeadHistory
+                // row at all, so any report reading LeadHistory (e.g. the Daily
+                // Report's per-user Won/Lost counts) silently showed 0 for every
+                // lead actually won/lost via the opportunity pipeline instead of
+                // the one-step convertLead flow.
+                await prisma.leadHistory.create({
+                    data: {
+                        leadId: syncedLead.id,
+                        fieldName: 'status',
+                        oldValue: syncedLead.status,
+                        newValue: newLeadStatus,
+                        changedById: requester?.id || null,
+                        reason: `Opportunity closed as ${newLeadStatus === 'won' ? 'Won' : 'Lost'}`
+                    }
+                });
+            }
         }
 
         // Audit Log
