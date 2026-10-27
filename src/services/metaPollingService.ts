@@ -91,27 +91,44 @@ export const MetaPollingService = {
                         const allForms = formsResponse.data.data || [];
                         const forms = allForms.filter((f: any) => f.status === 'ACTIVE');
 
-                        // Use 32 min buffer (cron runs every 30 min + 2 min safety overlap)
-                        const sinceTime = Math.floor(Date.now() / 1000) - (32 * 60);
+                        // Widened from a 32-min buffer (just the 30-min cron interval + 2 min
+                        // safety overlap) to 24 hours. The narrow window meant any webhook
+                        // outage longer than ~32 minutes caused permanent, silent lead loss -
+                        // this fallback could never catch up past its own tiny lookback.
+                        // MetaLeadGuard's DB-backed dedup (sourceDetails.metaLeadgenId) makes
+                        // re-fetching the same 24h of leads every run safe - already-saved
+                        // leads are skipped, so this only costs a slightly larger Graph API
+                        // response each cycle, not duplicate leads.
+                        const sinceTime = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
                         logger.info(`Checking ${forms.length} forms for page ${account.pageName || account.pageId} since ${new Date(sinceTime * 1000).toISOString()}`, 'MetaPolling', undefined, org.id);
 
                         for (const form of forms) {
                             try {
-                                const leadsResponse = await axios.get(`https://graph.facebook.com/v18.0/${form.id}/leads`, {
-                                    params: {
-                                        access_token: accessToken,
-                                        fields: 'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,ad_account_id',
-                                        filtering: JSON.stringify([{ 
-                                            field: 'time_created', 
-                                            operator: 'GREATER_THAN', 
-                                            value: sinceTime 
-                                        }]),
-                                        limit: 100
-                                    }
-                                });
+                                // Paginate (up to 5 pages = 1000 leads/form/cycle) instead of a
+                                // single limit:100 call - the wider 24h window means a
+                                // high-volume form's daily leads can now exceed one page.
+                                const leads: any[] = [];
+                                let after: string | undefined;
+                                for (let page = 0; page < 5; page++) {
+                                    const leadsResponse = await axios.get(`https://graph.facebook.com/v18.0/${form.id}/leads`, {
+                                        params: {
+                                            access_token: accessToken,
+                                            fields: 'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,ad_account_id',
+                                            filtering: JSON.stringify([{
+                                                field: 'time_created',
+                                                operator: 'GREATER_THAN',
+                                                value: sinceTime
+                                            }]),
+                                            limit: 200,
+                                            ...(after ? { after } : {})
+                                        }
+                                    });
 
-                                const leads = leadsResponse.data.data || [];
-                                
+                                    leads.push(...(leadsResponse.data.data || []));
+                                    after = leadsResponse.data.paging?.cursors?.after;
+                                    if (!after || !leadsResponse.data.data?.length) break;
+                                }
+
                                 if (leads.length > 0) {
                                     logger.info(`Found ${leads.length} leads for form ${form.name} (${account.pageName || account.pageId})`, 'MetaPolling', undefined, org.id);
                                     
