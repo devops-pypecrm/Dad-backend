@@ -343,46 +343,56 @@ export const DistributionService = {
         const criteria = rule.criteria as any[];
         if (!criteria || criteria.length === 0) return true;
 
+        // Multiple criteria on the SAME field (e.g. three
+        // "sourceDetails.campaignName equals X/Y/Z" rows meant as "any of
+        // these campaigns") must be OR'd together within that field, not
+        // ANDed - a lead has exactly one campaignName, so ANDing them made
+        // the rule unmatchable by any lead and silently fell through to the
+        // next rule / generic fallback assignment instead of the intended
+        // round-robin pool. Different fields still AND together as before.
+        const byField = new Map<string, any[]>();
         for (const criterion of criteria) {
-            const leadValue = this.getNestedValue(lead, criterion.field);
-            const ruleValue = criterion.value;
+            const key = criterion.field;
+            if (!byField.has(key)) byField.set(key, []);
+            byField.get(key)!.push(criterion);
+        }
 
-            switch (criterion.operator) {
-                case 'equals':
-                    if (typeof leadValue === 'string' && typeof ruleValue === 'string') {
-                        if (leadValue.trim().toLowerCase() !== ruleValue.trim().toLowerCase()) return false;
-                    } else {
-                        if (leadValue != ruleValue) return false;
-                    }
-                    break;
-                case 'not_equals':
-                    if (typeof leadValue === 'string' && typeof ruleValue === 'string') {
-                        if (leadValue.trim().toLowerCase() === ruleValue.trim().toLowerCase()) return false;
-                    } else {
-                        if (leadValue == ruleValue) return false;
-                    }
-                    break;
-                case 'contains':
-                    if (typeof leadValue === 'string' && !leadValue.toLowerCase().includes(String(ruleValue).toLowerCase())) return false;
-                    if (typeof leadValue !== 'string') return false;
-                    break;
-                case 'greater_than':
-                case 'gt':
-                    if (!(leadValue > ruleValue)) return false;
-                    break;
-                case 'less_than':
-                case 'lt':
-                    if (!(leadValue < ruleValue)) return false;
-                    break;
-                case 'in':
-                    // Check if leadValue is in array of ruleValues
-                    if (Array.isArray(ruleValue) && !ruleValue.includes(leadValue)) return false;
-                    break;
-                default:
-                    break;
-            }
+        for (const [, fieldCriteria] of byField) {
+            const anyMatches = fieldCriteria.some((criterion) => this.matchesCriterion(criterion, lead));
+            if (!anyMatches) return false;
         }
         return true;
+    },
+
+    /** Evaluates a single criterion against a lead. */
+    matchesCriterion(criterion: any, lead: any): boolean {
+        const leadValue = this.getNestedValue(lead, criterion.field);
+        const ruleValue = criterion.value;
+
+        switch (criterion.operator) {
+            case 'equals':
+                if (typeof leadValue === 'string' && typeof ruleValue === 'string') {
+                    return leadValue.trim().toLowerCase() === ruleValue.trim().toLowerCase();
+                }
+                return leadValue == ruleValue;
+            case 'not_equals':
+                if (typeof leadValue === 'string' && typeof ruleValue === 'string') {
+                    return leadValue.trim().toLowerCase() !== ruleValue.trim().toLowerCase();
+                }
+                return leadValue != ruleValue;
+            case 'contains':
+                return typeof leadValue === 'string' && leadValue.toLowerCase().includes(String(ruleValue).toLowerCase());
+            case 'greater_than':
+            case 'gt':
+                return leadValue > ruleValue;
+            case 'less_than':
+            case 'lt':
+                return leadValue < ruleValue;
+            case 'in':
+                return Array.isArray(ruleValue) ? ruleValue.includes(leadValue) : true;
+            default:
+                return true;
+        }
     },
 
     /**
