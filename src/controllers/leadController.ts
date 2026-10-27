@@ -1210,7 +1210,13 @@ export const deleteLead = async (req: express.Request, res: express.Response) =>
 
 export const createBulkLeads = async (req: express.Request, res: express.Response) => {
     try {
-        const { leads, assignmentRuleId, applyAssignmentRules, splitUserIds, splitStartIndex } = req.body;
+        const { leads, assignmentRuleId, applyAssignmentRules, splitUserIds, splitStartIndex, flagAsReEnquiry } = req.body;
+        // Resuming a large import that got interrupted (e.g. the browser tab
+        // closed/refreshed mid-upload) means re-sending the whole file from
+        // the start - without this, every already-created lead in that file
+        // would get logged as a fresh re-enquiry on the resend. Default true
+        // to keep existing behavior for normal (non-resume) imports.
+        const skipDuplicatesSilently = flagAsReEnquiry === false;
         const user = (req as any).user;
 
         // Support both direct array (legacy) and object with options
@@ -1305,6 +1311,14 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
 
                 if (duplicateCheck.isDuplicate && duplicateCheck.existingLead) {
                     const existingLead = duplicateCheck.existingLead;
+
+                    if (skipDuplicatesSilently) {
+                        // Resume mode: this row already exists in the CRM - leave it
+                        // completely untouched (no re-enquiry log, no owner/branch move).
+                        duplicateCount++;
+                        continue;
+                    }
+
                     // Only actually move branch/owner when this row explicitly names one
                     // AND it's genuinely different from where the lead already sits —
                     // "not branch specific" (explicitBranchId unset) always keeps the
