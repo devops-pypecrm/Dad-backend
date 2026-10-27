@@ -73,7 +73,7 @@ async function main() {
             let formLeadCount = 0;
 
             while (nextUrl) {
-                const res = await axios.get(nextUrl);
+                const res: { data: { data?: any[]; paging?: { next?: string } } } = await axios.get(nextUrl);
                 const data = res.data.data || [];
                 for (const l of data) {
                     l.form_name = form.name;
