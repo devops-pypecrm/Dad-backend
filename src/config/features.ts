@@ -19,6 +19,11 @@ export const PLATFORM_FEATURES: PlatformFeature[] = [
         key: 'instagram',
         label: 'Instagram',
         description: 'Shared inbox for Instagram DMs, keyword chatbots with a drag-and-drop workflow builder, and Ask-to-Follow comment bots, plus the Instagram connection. When off, the organisation sees none of it and nothing is sent or received.'
+    },
+    {
+        key: 'workflow_automation',
+        label: 'Workflows & Automation',
+        description: 'The Workflows and Automation tabs under System in the sidebar, and the workflow automation builder/engine. When off, the organisation does not see either tab.'
     }
 ];
 
