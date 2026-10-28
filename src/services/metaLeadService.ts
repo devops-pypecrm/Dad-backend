@@ -1,3 +1,4 @@
+import { ContactLinkService } from './contactLinkService';
 import axios from 'axios';
 import prisma from '../config/prisma';
 import { DistributionService } from './distributionService';
@@ -456,6 +457,11 @@ export const MetaLeadService = {
                     formFields: rawFormFields
                 }
             };
+
+            if (await ContactLinkService.isBlocked(orgId, crmData.phone)) {
+                console.log(`[MetaLead] Number is blocked - lead ${leadgenId} dropped.`);
+                return;
+            }
 
             const { DuplicateLeadService } = await import('./duplicateLeadService');
             const duplicateCheck = await DuplicateLeadService.checkDuplicate(

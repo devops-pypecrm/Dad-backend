@@ -1,3 +1,4 @@
+import { ContactLinkService } from '../services/contactLinkService';
 
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
@@ -206,6 +207,12 @@ export const submitWebForm = async (req: Request, res: Response) => {
                 });
                 if (assignedUser?.branchId) targetBranchId = assignedUser.branchId;
             }
+        // Blocked numbers never reach the CRM. Answer like a normal success so the form
+        // gives nothing away.
+        if (await ContactLinkService.isBlocked(orgId, cleanPhone)) {
+            return res.status(200).json({ message: 'Thank you for your interest! We will contact you soon.' });
+        }
+
         // Check for duplicates in the RESOLVED branch
         const { DuplicateLeadService } = await import('../services/duplicateLeadService');
         const duplicateCheck = await DuplicateLeadService.checkDuplicate(

@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import prisma from '../config/prisma'; // Use the configured instance with adapter
 import { getOrgId, getSubordinateIds, getVisibleUserIds } from '../utils/hierarchyUtils'; // Use existing utils
 import { Prisma } from '../generated/client';
+import { phoneKeysFrom, ContactLinkService } from '../services/contactLinkService';
+import { isAdmin } from '../utils/roleUtils';
 
 // GET /api/contacts
 export const getContacts = async (req: Request, res: Response) => {
@@ -33,6 +35,9 @@ export const getContacts = async (req: Request, res: Response) => {
             where.ownerId = { in: visibleUserIds };
         }
 
+        // Blocked contacts live on their own list (GET /contacts/blocked).
+        where.isBlocked = false;
+
         // Lightweight count-only mode for the web app's "Showing X of Y" indicator.
         if (req.query.countOnly === 'true') {
             const defaultTotal = await prisma.contact.count({ where });
@@ -52,6 +57,7 @@ export const getContacts = async (req: Request, res: Response) => {
                 { lastName: { contains: search, mode: 'insensitive' } },
                 { email: { contains: search, mode: 'insensitive' } },
                 { jobTitle: { contains: search, mode: 'insensitive' } },
+                { phoneKeys: { has: search.replace(/\D/g, '').slice(-10) } },
             ];
         }
 
@@ -102,6 +108,18 @@ export const createContact = async (req: Request, res: Response) => {
         }
         */
 
+        const newKeys = phoneKeysFrom(req.body.phones);
+        if (newKeys.length === 0) {
+            return res.status(400).json({ message: 'A mobile number is required' });
+        }
+        const clash = await prisma.contact.findFirst({
+            where: { organisationId: orgId, isDeleted: false, phoneKeys: { hasSome: newKeys } },
+            select: { id: true, firstName: true, lastName: true }
+        });
+        if (clash) {
+            return res.status(409).json({ message: `A contact with this number already exists (${clash.firstName} ${clash.lastName || ''})`.trim() });
+        }
+
         if (email) {
             const existingContact = await prisma.contact.findFirst({
                 where: {
@@ -116,9 +134,10 @@ export const createContact = async (req: Request, res: Response) => {
 
         const contactData: Prisma.ContactCreateInput = {
             firstName: req.body.firstName,
-            lastName: req.body.lastName,
+            lastName: req.body.lastName || '',
             email: req.body.email,
             phones: req.body.phones,
+            phoneKeys: newKeys,
             jobTitle: req.body.jobTitle,
             department: req.body.department,
             address: req.body.address,
@@ -251,6 +270,20 @@ export const updateContact = async (req: Request, res: Response) => {
             }
         }
 
+        // Block state is only changed through the dedicated block/unblock endpoints.
+        delete updates.isBlocked; delete updates.blockedAt; delete updates.blockedById; delete updates.blockedReason; delete updates.phoneKeys;
+        if (updates.phones !== undefined) {
+            const keys = phoneKeysFrom(updates.phones);
+            if (keys.length > 0) {
+                const clash = await prisma.contact.findFirst({
+                    where: { organisationId: currentContact.organisationId, isDeleted: false, id: { not: contactId }, phoneKeys: { hasSome: keys } },
+                    select: { firstName: true, lastName: true }
+                });
+                if (clash) return res.status(409).json({ message: `Another contact already uses this number (${clash.firstName} ${clash.lastName || ''})`.trim() });
+            }
+            updates.phoneKeys = keys;
+        }
+
         const contact = await prisma.contact.update({
             where: whereObj,
             data: updates,
@@ -327,6 +360,119 @@ export const deleteContact = async (req: Request, res: Response) => {
         }
 
         res.json({ message: 'Contact deleted' });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+
+// ---- Contact <-> Lead linking & block list -------------------------------------------
+
+const scopedContactWhere = async (req: Request, id?: string) => {
+    const user = (req as any).user;
+    const where: any = { isDeleted: false };
+    if (id) where.id = id;
+    if (user.role !== 'super_admin') {
+        const orgId = getOrgId(user);
+        if (!orgId) return null;
+        where.organisationId = orgId;
+    }
+    return where;
+};
+
+// GET /api/contacts/blocked
+export const getBlockedContacts = async (req: Request, res: Response) => {
+    try {
+        const where = await scopedContactWhere(req);
+        if (!where) return res.status(403).json({ message: 'User has no organisation' });
+        where.isBlocked = true;
+        const contacts = await prisma.contact.findMany({
+            where,
+            orderBy: { blockedAt: 'desc' },
+            select: { id: true, firstName: true, lastName: true, phones: true, blockedAt: true, blockedReason: true, blockedById: true }
+        });
+        res.json({ contacts });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// POST /api/contacts/:id/block   { reason? }
+export const blockContact = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        if (!isAdmin(user)) return res.status(403).json({ message: 'Only admins can block a contact' });
+        const where = await scopedContactWhere(req, req.params.id);
+        if (!where) return res.status(403).json({ message: 'User has no organisation' });
+        const found = await prisma.contact.findFirst({ where, select: { id: true, phoneKeys: true, organisationId: true } });
+        if (!found) return res.status(404).json({ message: 'Contact not found' });
+        if (found.phoneKeys.length === 0) return res.status(400).json({ message: 'Contact has no phone number to block' });
+        const contact = await prisma.contact.update({
+            where: { id: found.id },
+            data: { isBlocked: true, blockedAt: new Date(), blockedById: user.id, blockedReason: req.body?.reason || null }
+        });
+        const { logAudit } = await import('../utils/auditLogger');
+        logAudit({ action: 'BLOCK_CONTACT', entity: 'Contact', entityId: contact.id, actorId: user.id, organisationId: contact.organisationId, details: { name: `${contact.firstName} ${contact.lastName}` } });
+        res.json(contact);
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// POST /api/contacts/:id/unblock
+export const unblockContact = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        if (!isAdmin(user)) return res.status(403).json({ message: 'Only admins can unblock a contact' });
+        const where = await scopedContactWhere(req, req.params.id);
+        if (!where) return res.status(403).json({ message: 'User has no organisation' });
+        const found = await prisma.contact.findFirst({ where, select: { id: true } });
+        if (!found) return res.status(404).json({ message: 'Contact not found' });
+        const contact = await prisma.contact.update({
+            where: { id: found.id },
+            data: { isBlocked: false, blockedAt: null, blockedById: null, blockedReason: null }
+        });
+        const { logAudit } = await import('../utils/auditLogger');
+        logAudit({ action: 'UNBLOCK_CONTACT', entity: 'Contact', entityId: contact.id, actorId: user.id, organisationId: contact.organisationId, details: { name: `${contact.firstName} ${contact.lastName}` } });
+        res.json(contact);
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// GET /api/contacts/:id/leads - every lead that came in on this contact's number(s)
+export const getContactLeads = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const where = await scopedContactWhere(req, req.params.id);
+        if (!where) return res.status(403).json({ message: 'User has no organisation' });
+        const contact = await prisma.contact.findFirst({ where, select: { phoneKeys: true, organisationId: true } });
+        if (!contact) return res.status(404).json({ message: 'Contact not found' });
+        let leads = await ContactLinkService.findLeadsForKeys(contact.organisationId, contact.phoneKeys);
+        // Reps only see leads they're allowed to see.
+        if (!isAdmin(user) && user.role !== 'super_admin') {
+            const visible = new Set(await getVisibleUserIds(user.id));
+            leads = leads.filter((l) => l.assignedToId && visible.has(l.assignedToId));
+        }
+        res.json({ leads });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// GET /api/contacts/by-lead/:leadId - contact(s) saved for a lead's number (lead detail badge)
+export const getContactsForLead = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(403).json({ message: 'User has no organisation' });
+        const lead = await prisma.lead.findFirst({
+            where: { id: req.params.leadId, organisationId: orgId },
+            select: { phone: true, secondaryPhone: true }
+        });
+        if (!lead) return res.status(404).json({ message: 'Lead not found' });
+        const contacts = await ContactLinkService.findContactsForPhones(orgId, [lead.phone, lead.secondaryPhone]);
+        res.json({ contacts });
     } catch (error) {
         res.status(500).json({ message: (error as Error).message });
     }

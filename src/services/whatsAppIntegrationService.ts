@@ -1,3 +1,4 @@
+import { ContactLinkService } from './contactLinkService';
 import prisma from '../config/prisma';
 import { getIO } from '../socket';
 import { GallaboxService } from './gallaboxService';
@@ -206,6 +207,12 @@ export const WhatsAppIntegrationService = {
                 if (existingMessage) return;
             }
 
+            // Messages from a blocked number are dropped entirely - no lead, no
+            // re-enquiry, no stored message.
+            if (await ContactLinkService.isBlocked(organisationId, message.from)) {
+                return;
+            }
+
             // Determine content structure
             let messageType = message.type;
             const content: any = { text: message.body };
@@ -291,7 +298,9 @@ export const WhatsAppIntegrationService = {
             }
 
             // Create lead if none exists and link to message
-            if (!lead && !contactId) {
+            // A saved Contact no longer suppresses lead capture: contacts are now just
+            // labelled numbers, and an enquiry from one should still become a lead.
+            if (!lead) {
                 const contactName = message.senderName || message.from;
                 const cleanPhone = normalizedPhone; // Service handles normalization
 

@@ -1,3 +1,4 @@
+import { ContactLinkService } from './contactLinkService';
 import prisma from '../config/prisma';
 import { DistributionService } from './distributionService';
 import { NotificationService } from './notificationService';
@@ -126,6 +127,11 @@ export const ZapierWebhookService = {
                 organisationId: org.id,
                 branchId: zapierConfig.branchId || null
             };
+
+            if (await ContactLinkService.isBlocked(org.id, crmData.phone)) {
+                console.log('[ZapierWebhook] Number is blocked - lead dropped.');
+                return { success: true, blocked: true } as any;
+            }
 
             // Check for duplicates
             const { DuplicateLeadService } = await import('./duplicateLeadService');

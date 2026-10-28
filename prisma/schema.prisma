@@ -543,8 +543,16 @@ model Contact {
   lead             Lead?             @relation("LeadToContact", fields: [leadId], references: [id])
   branchId         String?
   branch           Branch?           @relation(fields: [branchId], references: [id])
+  // Normalized last-10-digit keys of every number in `phones` - used to link
+  // incoming leads to this contact and to enforce the block list.
+  phoneKeys        String[]          @default([])
+  isBlocked        Boolean           @default(false)
+  blockedAt        DateTime?
+  blockedById      String?
+  blockedReason    String?
 
   @@index([organisationId])
+  @@index([organisationId, isBlocked])
   @@index([email])
   @@index([firstName, lastName])
   @@index([branchId])

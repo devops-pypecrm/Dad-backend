@@ -1,3 +1,4 @@
+import { ContactLinkService } from './contactLinkService';
 import prisma from '../config/prisma';
 import { DistributionService } from './distributionService';
 import { NotificationService } from './notificationService';
@@ -104,6 +105,11 @@ export const MetaPayloadService = {
                 organisationId: org.id,
                 branchId: config.branchId || null
             };
+
+            if (await ContactLinkService.isBlocked(org.id, crmData.phone)) {
+                console.log('[MetaPayload] Number is blocked - lead dropped.');
+                return { success: true, blocked: true } as any;
+            }
 
             const { DuplicateLeadService } = await import('./duplicateLeadService');
             const duplicateCheck = await DuplicateLeadService.checkDuplicate(crmData.phone, crmData.email, org.id);

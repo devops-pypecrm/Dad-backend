@@ -1,3 +1,4 @@
+import { ContactLinkService } from '../services/contactLinkService';
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { getOrgId, getSubordinateIds, getVisibleUserIds } from '../utils/hierarchyUtils';
@@ -170,6 +171,10 @@ export const createLeadEnhanced = async (req: Request, res: Response) => {
         if (existingLead) {
             logger.warn('Attempted to create duplicate lead', 'LEADS', userId, organisationId || undefined, { email: sanitizedData.email });
             return ResponseHandler.validationError(res, 'A lead with this email already exists');
+        }
+
+        if (sanitizedData.phone && await ContactLinkService.isBlocked(organisationId, sanitizedData.phone)) {
+            return ResponseHandler.validationError(res, 'This number is blocked');
         }
 
         // 5. Create lead with error handling

@@ -6,6 +6,8 @@ import { DistributionService } from '../services/distributionService';
 import { WorkflowEngine } from '../services/workflowEngine';
 import { NotificationService } from '../services/notificationService';
 import { LeadSource } from '../generated/client';
+import { mapImportSource } from '../utils/leadSourceMapper';
+import { ContactLinkService } from '../services/contactLinkService';
 import { isAdmin, isSuperAdmin, isOrgAdmin } from '../utils/roleUtils';
 import { GeoLocationService } from '../services/geoLocationService';
 import { FollowUpService } from '../services/followUpService';
@@ -298,6 +300,11 @@ export const createLead = async (req: express.Request, res: express.Response) =>
         }
 
         const { firstName, lastName, source, sourceDetails, company, enquiryAbout } = req.body;
+
+        // Numbers on the contact block list never become leads.
+        if (await ContactLinkService.isBlocked(orgId, cleanPhone)) {
+            return res.status(403).json({ message: 'This number is blocked. Unblock the contact to add a lead for it.', code: 'NUMBER_BLOCKED' });
+        }
 
         // Check for duplicates using DuplicateLeadService (Strictly isolated by branch)
         const duplicateCheck = await DuplicateLeadService.checkDuplicate(cleanPhone, email, orgId, targetBranchId || undefined, false, req.body.phoneCountryCode);
@@ -1245,6 +1252,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
 
         let createdCount = 0;
         let duplicateCount = 0;
+        let blockedCount = 0;
         let reEnquiryCount = 0;
         const errors: any[] = [];
 
@@ -1293,6 +1301,12 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                 }
 
                 let targetBranchId = explicitBranchId || user.branchId;
+
+                // Blocked numbers are dropped silently - not a lead, not a re-enquiry.
+                if (await ContactLinkService.isBlocked(orgId, cleanPhone)) {
+                    blockedCount++;
+                    continue;
+                }
 
                 // Duplicate detection is intentionally ORG-WIDE for bulk import, not scoped
                 // to targetBranchId — branch-scoped detection is right for genuine walk-ins,
@@ -1374,8 +1388,16 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                 // Normalize campaign info once so both rule-matching (below) and the
                 // created lead itself (which previously dropped this entirely) agree
                 // on the same sourceDetails.campaignName that assignment rules key on.
-                const finalSourceDetails = l.sourceDetails || (l.campaignName || l.campaign
-                    ? { campaignName: l.campaignName || l.campaign }
+                // The file's free-text "source" must be mapped onto the LeadSource
+                // enum or prisma rejects the row; the original text and any
+                // campaign name hiding in it are kept in sourceDetails.
+                const mappedSource = mapImportSource(l.source);
+                const campaignFromRow = l.campaignName || l.campaign || mappedSource.campaignName;
+                const finalSourceDetails = l.sourceDetails || (campaignFromRow || mappedSource.originalSource
+                    ? {
+                        ...(campaignFromRow ? { campaignName: campaignFromRow } : {}),
+                        ...(mappedSource.originalSource ? { originalSource: mappedSource.originalSource } : {})
+                    }
                     : undefined);
 
                 let finalOwnerId = targetOwnerId;
@@ -1432,7 +1454,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                     countryCode: l.countryCode || geoData?.countryCode || undefined,
                     phoneCountryCode: l.phoneCountryCode || geoData?.phoneCountryCode || undefined,
                     organisation: { connect: { id: orgId } },
-                    source: l.source || LeadSource.import,
+                    source: mappedSource.source as LeadSource,
                     status: finalStatus,
                     leadScore: l.leadScore ? parseInt(l.leadScore.toString()) : 0,
                     stage: finalStage || undefined,
@@ -1484,8 +1506,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                 createdCount++;
             } catch (error: any) {
                 console.error('[createBulkLeads] Error creating lead:', error.message, 'Lead data:', l);
-                errors.push({ lead: l, error: error.message });
-                duplicateCount++;
+                errors.push({ lead: l, error: (error.message || '').split('\n').filter(Boolean).pop() || 'Unknown error' });
             }
         }
 
@@ -1496,6 +1517,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
             created: createdCount,
             reEnquiries: reEnquiryCount,
             duplicates: duplicateCount,
+            blocked: blockedCount,
             errors: errors.length > 0 ? errors : undefined,
             nextSplitIndex: splitIndex
         });

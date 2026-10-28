@@ -1,3 +1,4 @@
+import { ContactLinkService } from '../services/contactLinkService';
 
 import express from 'express';
 import { verifyApiKey } from '../middleware/apiKeyMiddleware';
@@ -77,6 +78,11 @@ router.post('/leads', verifyApiKey, async (req, res) => {
         let cleanPhone = phone?.toString().replace(/\D/g, '');
         if (cleanPhone && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
         console.log(`[LeadAPI][${REQUEST_ID}] Step 5: Sanitized Phone for duplicate check: "${cleanPhone}"`);
+
+        if (cleanPhone && await ContactLinkService.isBlocked(orgId, cleanPhone)) {
+            console.log(`[LeadAPI][${REQUEST_ID}] Number is blocked - lead dropped.`);
+            return res.status(200).json({ message: 'Lead received', blocked: true });
+        }
 
         // Check for duplicates
         console.log(`[LeadAPI][${REQUEST_ID}] Step 6: Starting DuplicateLeadService.checkDuplicate...`);

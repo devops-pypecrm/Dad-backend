@@ -1,3 +1,4 @@
+import { ContactLinkService } from './contactLinkService';
 import prisma from '../config/prisma';
 import fs from 'fs';
 import csv from 'csv-parser';
@@ -334,6 +335,12 @@ export class ImportJobService {
                     // ever set from an explicit choice (job-level branchId or an ownerEmail
                     // that resolved to a specific branch) — used below to decide whether this
                     // row is actually asking to move an existing lead to a new branch.
+                    // Blocked numbers are skipped - never a lead, never a re-enquiry.
+                    if (await ContactLinkService.isBlocked(job.organisationId, leadData.phone)) {
+                        skipCount++;
+                        continue;
+                    }
+
                     const { DuplicateLeadService } = await import('./duplicateLeadService');
                     const duplicateCheck = await DuplicateLeadService.checkDuplicate(
                         leadData.phone,
