@@ -47,10 +47,18 @@ export const MetaLeadGuard = {
         }
 
         // Layer 2: Database dedup (protects against server restarts / replays)
+        // A submission that matched an existing phone number never creates its own lead -
+        // it is recorded as a re-enquiry, and its Meta lead ID lives inside
+        // sourceDetails.reEnquiries[].details, not at the top level. Checking only the
+        // top level meant the 24h polling window re-processed such a submission on every
+        // 30-minute run (one fake re-enquiry per run), so look in both places.
         const existsInDB = await prisma.lead.findFirst({
             where: {
                 organisationId: orgId,
-                sourceDetails: { path: ['metaLeadgenId'], equals: leadgenId }
+                OR: [
+                    { sourceDetails: { path: ['metaLeadgenId'], equals: leadgenId } },
+                    { sourceDetails: { path: ['reEnquiries'], array_contains: [{ details: { metaLeadgenId: leadgenId } }] } }
+                ]
             },
             select: { id: true }
         });
