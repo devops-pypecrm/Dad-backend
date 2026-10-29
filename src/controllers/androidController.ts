@@ -1422,6 +1422,20 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                     }
                 });
 
+                // Recycled CallLog _ID (phone's call log was cleared/reset, so new calls
+                // reuse old ids): by this point the in-window guards above have already
+                // ruled out "same call", yet (organisationId, hardwareId) is unique, so
+                // the create would hit P2002 and be silently reported as "synced" while
+                // the call never lands. Disambiguate with the call timestamp so it is stored.
+                let createHardwareId = hardwareId || undefined;
+                if (createHardwareId && createHardwareId !== 'none') {
+                    const clash = await prisma.interaction.findFirst({
+                        where: { organisationId: user.organisationId, hardwareId: createHardwareId },
+                        select: { id: true }
+                    });
+                    if (clash) createHardwareId = `${createHardwareId}~${callDate.getTime()}`;
+                }
+
                 await prisma.interaction.create({
                     data: {
                         type: 'call',
@@ -1439,7 +1453,7 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                         organisationId: user.organisationId,
                         createdById: user.id,
                         phoneNumber: phoneNumber,
-                        hardwareId: hardwareId || undefined,
+                        hardwareId: createHardwareId,
                         callSessionId: callSessionId || undefined
                     }
                 });
