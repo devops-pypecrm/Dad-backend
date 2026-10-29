@@ -1185,6 +1185,18 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                             direction: direction,
                         };
 
+                        // If the fuzzy match landed on an old row (e.g. same phone number was called
+                        // months ago and Phase 3b matched it because the duration happened to be
+                        // within tolerance), the existing row's `date` stays in the past and the
+                        // daily report never counts today's call.  Update `date` whenever the
+                        // incoming call timestamp is strictly newer than what's stored — this is
+                        // safe because Priority 1 (hardwareId) and Priority 2 (callSessionId)
+                        // matches are exact and their dates are already correct; only the Phase 3
+                        // fuzzy match can ever produce a stale-date row.
+                        if (callDate > existingInteraction.date) {
+                            updatePayload.date = callDate;
+                        }
+
                         if (hardwareId) updatePayload.hardwareId = hardwareId;
                         if (callSessionId) updatePayload.callSessionId = callSessionId;
                         if (carrierDurationSecs !== null) updatePayload.hardwareDuration = carrierDurationSecs;
