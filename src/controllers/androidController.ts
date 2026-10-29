@@ -519,9 +519,13 @@ export const uploadCallRecording = async (req: Request, res: Response) => {
                 orderBy: { date: 'desc' }
             });
 
-            // If no initiated call, fall back to a 15-minute window for completed/missed/failed calls
+            // If no initiated call, fall back to a short window for completed/missed/failed calls.
+            // Was 15 minutes — same over-wide-window bug as syncCallLogs' Phase 3b (see that
+            // fix's doc comment): this fallback doesn't even check direction/duration, just
+            // phone number, so it was even more likely to attach a recording upload to the
+            // wrong one of several real, distinct calls to the same number within the window.
             if (!existingInteraction) {
-                const phase3bUploadStart = new Date(callDate.getTime() - 15 * 60 * 1000);
+                const phase3bUploadStart = new Date(callDate.getTime() - 3 * 60 * 1000);
                 const candidate = await prisma.interaction.findFirst({
                     where: {
                         organisationId: user.organisationId,
@@ -1071,7 +1075,20 @@ export const syncCallLogs = async (req: Request, res: Response) => {
                         // within a few minutes of the call itself — never across hours or days.
                         // Using a 24h window caused daily follow-up calls (e.g. rep called yesterday at 12pm,
                         // calls again today at 11:50am) to match yesterday's interaction and be skipped!
-                        const phase3bWindowStart = new Date(callDate.getTime() - 15 * 60 * 1000); // 15 minutes
+                        //
+                        // Was 15 minutes, tightened to 3: a high-volume caller re-dialing the same
+                        // number repeatedly (completely normal — "no answer, try again a few
+                        // minutes later") produces several genuinely distinct calls with near-
+                        // identical short durations (±5s of each other is trivial for two ~10-20s
+                        // calls), same direction, same phone number — everything Phase 3b checks
+                        // except actually being the same call. A 15-minute window was wide enough
+                        // to span that normal redial cadence, silently collapsing distinct calls
+                        // into one and making the backend report them "synced" (via
+                        // trackHardwareId) while zero new rows were ever created — confirmed in
+                        // production for a user whose calls were legitimately ~2-10 minutes apart.
+                        // 3 minutes is still generous for the "carrier update arrives a few
+                        // seconds after the real sync" case this phase actually exists for.
+                        const phase3bWindowStart = new Date(callDate.getTime() - 3 * 60 * 1000); // 3 minutes
 
                         const candidate = await prisma.interaction.findFirst({
                             where: {
