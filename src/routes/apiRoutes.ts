@@ -7,6 +7,31 @@ import { LeadSource } from '../generated/client';
 import { DistributionService } from '../services/distributionService';
 import { WorkflowEngine } from '../services/workflowEngine';
 import { emitToOrg } from '../socket';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
+import { GeoLocationService } from '../services/geoLocationService';
+
+/** Splits a submitted phone into the national number and its country code ("+971"). */
+function splitPhone(raw: any, explicitCc?: any): { national: string; cc?: string } {
+    const str = raw?.toString().trim() || '';
+    let digits = str.replace(/\D/g, '');
+    if (!digits) return { national: '' };
+    const international = str.startsWith('+') || (str.startsWith('00') && digits.length > 10);
+    if (digits.startsWith('00') && digits.length > 10) digits = digits.slice(2);
+
+    const ccDigits = explicitCc ? (String(explicitCc).match(/\d{1,4}/) || [])[0] : undefined;
+    if (ccDigits) {
+        let national = digits;
+        if (national.length > 10 && national.startsWith(ccDigits)) national = national.slice(ccDigits.length);
+        return { national: national.replace(/^0+/, ''), cc: `+${ccDigits}` };
+    }
+    if (international || digits.length > 10) {
+        const parsed = parsePhoneNumberFromString(`+${digits}`);
+        if (parsed && (international || parsed.isValid())) {
+            return { national: String(parsed.nationalNumber), cc: `+${parsed.countryCallingCode}` };
+        }
+    }
+    return { national: digits };
+}
 
 const router = express.Router();
 
@@ -75,8 +100,16 @@ router.post('/leads', verifyApiKey, async (req, res) => {
         }
 
         // Sanitize
-        let cleanPhone = phone?.toString().replace(/\D/g, '');
-        if (cleanPhone && cleanPhone.length > 10) cleanPhone = cleanPhone.slice(-10);
+        // Same convention as the CRM's own lead form: `phone` holds the number WITHOUT its
+        // country code, and the code lives only in `phoneCountryCode` (e.g. "+971"). The code
+        // comes from an explicit phoneCountryCode field when the form has one, otherwise it is
+        // split off an international number ("+971 50 123 4567"). A bare number is kept as-is.
+        const { national, cc } = splitPhone(phone, req.body.phoneCountryCode);
+        const cleanPhone = national;
+        const phoneGeo = cleanPhone
+            ? GeoLocationService.detectCountryFromPhone(cc ? `${cc}${cleanPhone}` : cleanPhone)
+            : null;
+        const resolvedPhoneCountryCode = cc || phoneGeo?.phoneCountryCode;
         console.log(`[LeadAPI][${REQUEST_ID}] Step 5: Sanitized Phone for duplicate check: "${cleanPhone}"`);
 
         if (cleanPhone && await ContactLinkService.isBlocked(orgId, cleanPhone)) {
@@ -99,6 +132,7 @@ router.post('/leads', verifyApiKey, async (req, res) => {
                     lastName: resolvedLastName || '',
                     email,
                     phone: cleanPhone,
+                    phoneCountryCode: resolvedPhoneCountryCode,
                     company,
                     source: resolvedSource,
                     sourceDetails: {
@@ -143,6 +177,9 @@ router.post('/leads', verifyApiKey, async (req, res) => {
                 lastName: resolvedLastName || '',
                 email,
                 phone: cleanPhone || 'Unknown',
+                phoneCountryCode: resolvedPhoneCountryCode || undefined,
+                country: phoneGeo?.country || undefined,
+                countryCode: phoneGeo?.countryCode || undefined,
                 company,
                 source: resolvedSource,
                 enquiryAbout: resolvedMessage, // Corrected: use resolvedMessage
