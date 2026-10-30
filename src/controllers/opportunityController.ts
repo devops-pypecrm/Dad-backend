@@ -169,8 +169,29 @@ export const getOpportunities = async (req: Request, res: Response) => {
             orderBy: { createdAt: 'desc' }
         });
 
+        // The lead's status just before it was moved into an opportunity. Conversion
+        // (leadController.convertLead) logs it as a LeadHistory status row with reason
+        // 'Lead Converted to Opportunity' (oldValue = status before conversion), written in the
+        // same transaction as the opportunity - so the right row is the one closest in time to
+        // the opportunity's createdAt (a lead can be converted more than once).
+        const leadIds = Array.from(new Set(opportunities.map(o => o.leadId).filter((id): id is string => !!id)));
+        const conversions = leadIds.length === 0 ? [] : await prisma.leadHistory.findMany({
+            where: { leadId: { in: leadIds }, fieldName: 'status', reason: 'Lead Converted to Opportunity' },
+            select: { leadId: true, oldValue: true, createdAt: true }
+        });
+        const WINDOW_MS = 10 * 60 * 1000;
+        const withConversionStatus = opportunities.map(opp => {
+            let best: { oldValue: string | null; diff: number } | null = null;
+            for (const h of conversions) {
+                if (h.leadId !== opp.leadId) continue;
+                const diff = Math.abs(h.createdAt.getTime() - opp.createdAt.getTime());
+                if (diff <= WINDOW_MS && (!best || diff < best.diff)) best = { oldValue: h.oldValue, diff };
+            }
+            return { ...opp, leadStatusAtConversion: best?.oldValue ?? null };
+        });
+
         res.json({
-            opportunities,
+            opportunities: withConversionStatus,
             page,
             totalPages: Math.ceil(count / limit),
             totalOpportunities: count
