@@ -1664,34 +1664,18 @@ export const getLeadHealth = async (req: Request, res: Response) => {
         // unattended/no-activity under the dashboard's default "This Month" filter,
         // because almost all of the neglected leads were created in prior months.
 
-        const staleThreshold = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-        // `interactions: { none: {...} } }` — EVEN with a non-empty filter inside
-        // `none` — compiles to an UNCORRELATED, ORG-UNSCOPED
-        // `NOT IN (SELECT leadId FROM Interaction WHERE date >= $threshold)`, i.e.
-        // it scans/builds a set from EVERY organisation's Interaction rows in the
-        // window platform-wide, not just this org's. Confirmed directly via Prisma
-        // query logging + EXPLAIN ANALYZE: ~193s on a real org (20k+ leads) vs
-        // ~100ms for the equivalent hand-written correlated NOT EXISTS using the
-        // exact same leadId+date index - the assumption that a non-empty `none`
-        // filter gets an efficient correlated NOT EXISTS does NOT hold here.
-        // Fetching this org's own recently-active lead ids first (scoped by
-        // `Interaction.organisationId`, already indexed) and excluding them via
-        // `id: { notIn }` avoids the bad codegen entirely while returning
-        // identical results - same workaround as `unattendedLeads` below already
-        // used for its own (empty-filter) version of this same Prisma behavior.
-        const [interactedLeadIds, recentlyActiveLeadIds] = await Promise.all([
-            prisma.interaction.findMany({
+        const { buildNoActivityWhere } = await import('../services/noActivityLeadService');
+        const interactedLeadIds = (
+            await prisma.interaction.findMany({
                 where: { organisationId: orgId, leadId: { not: null } },
                 select: { leadId: true },
                 distinct: ['leadId'],
-            }).then(rows => rows.map((i) => i.leadId as string)),
-            prisma.interaction.findMany({
-                where: { organisationId: orgId, leadId: { not: null }, date: { gte: staleThreshold } },
-                select: { leadId: true },
-                distinct: ['leadId'],
-            }).then(rows => rows.map((i) => i.leadId as string)),
-        ]);
+            })
+        ).map((i) => i.leadId as string);
+        // Shared definition (see noActivityLeadService): only statuses a rep can still
+        // work (AI/keyword classified per org), no recent interaction, never became an
+        // opportunity (won/lost/open).
+        const noActivity = await buildNoActivityWhere(orgId);
 
         const [unattendedLeads, noActivityLeads] = await Promise.all([
             prisma.lead.count({
@@ -1700,26 +1684,15 @@ export const getLeadHealth = async (req: Request, res: Response) => {
                     isDeleted: false,
                     status: 'new',
                     assignedToId: { not: null },
-                    // Status alone isn't enough — a lead can stay "new" while already
-                    // having real activity logged (a call made, a note added) that just
-                    // never updated the stage. Only count it if the timeline is empty.
+                    // Status alone isn't enough - a lead can stay "new" while already
+                    // having real activity logged. Only count it if the timeline is empty.
                     id: { notIn: interactedLeadIds },
                     ...branchFilter,
                     ...visibilityFilter,
                 },
             }),
             prisma.lead.count({
-                where: {
-                    organisationId: orgId,
-                    isDeleted: false,
-                    status: { notIn: ['converted', 'lost'] },
-                    updatedAt: { lt: staleThreshold },
-                    // Confirm directly there's no call/WhatsApp/email/meeting/note in the
-                    // same window too, rather than trusting updatedAt alone.
-                    id: { notIn: recentlyActiveLeadIds },
-                    ...branchFilter,
-                    ...visibilityFilter,
-                },
+                where: { ...noActivity.where, ...branchFilter, ...visibilityFilter },
             }),
         ]);
 

@@ -2766,37 +2766,14 @@ export const getNoActivityLeads = async (req: express.Request, res: express.Resp
         const isSuperAdminUser = user.isSuperAdmin || isSuperAdmin(user);
         const visibilityFilter = await getLeadVisibilityFilter(user, isSuperAdminUser);
 
-        const staleThreshold = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-        // `interactions: { none: { date: {...} } } }` compiles to an UNCORRELATED,
-        // ORG-UNSCOPED `NOT IN (SELECT leadId FROM Interaction WHERE date >= ...)`
-        // - confirmed via Prisma query logging to take ~193s on a real org (20k+
-        // leads), vs ~100ms for the equivalent correlated NOT EXISTS using the
-        // same leadId+date index. Fetching this org's own recently-active lead
-        // ids first (scoped by `Interaction.organisationId`, already indexed)
-        // and excluding them via `id: { notIn }` avoids the bad codegen entirely.
-        const recentlyActiveLeadIds = (
-            await prisma.interaction.findMany({
-                where: { organisationId: orgId, leadId: { not: null }, date: { gte: staleThreshold } },
-                select: { leadId: true },
-                distinct: ['leadId'],
-            })
-        ).map((i) => i.leadId as string);
-
-        const where: any = {
-            organisationId: orgId,
-            isDeleted: false,
-            // A specific stage filter narrows within the open set; without one, still
-            // exclude closed leads — those naturally stop changing and shouldn't count.
-            status: req.query.status ? (req.query.status as string) : { notIn: ['converted', 'lost'] },
-            updatedAt: { lt: staleThreshold },
-            // Don't rely on updatedAt alone — it's only a proxy for "somebody touched this
-            // record" and can miss gaps in whichever code path logged the interaction.
-            // Directly confirm there's no call/WhatsApp/email/meeting/note of any kind in
-            // the same window before calling a lead "no activity".
-            id: { notIn: recentlyActiveLeadIds },
-            ...visibilityFilter,
-        };
+        const { buildNoActivityWhere } = await import('../services/noActivityLeadService');
+        const base = await buildNoActivityWhere(orgId);
+        const where: any = { ...base.where, ...visibilityFilter };
+        // A specific stage filter narrows within the live set (never widens it).
+        if (req.query.status) {
+            const wanted = req.query.status as string;
+            where.status = { in: (base.where.status.in as string[]).filter((s) => s === wanted) };
+        }
         if (req.query.branchId) where.branchId = req.query.branchId as string;
         if (req.query.assignedTo) where.assignedToId = req.query.assignedTo as string;
         if (req.query.source && Object.values(LeadSource).includes(req.query.source as LeadSource)) {
@@ -2822,6 +2799,90 @@ export const getNoActivityLeads = async (req: express.Request, res: express.Resp
         res.json({ leads, page, pages: Math.ceil(total / pageSize), total });
     } catch (error) {
         console.error('getNoActivityLeads Error:', error);
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// --- No-activity clean-up tool (admin only) -------------------------------------
+const parseCleanupFilters = (body: any) => ({
+    statuses: Array.isArray(body?.statuses) ? body.statuses.map(String) : [],
+    inactiveDays: body?.inactiveDays,
+    createdBefore: body?.createdBefore || undefined,
+    createdAfter: body?.createdAfter || undefined,
+    ownerIds: Array.isArray(body?.ownerIds) ? body.ownerIds.map(String) : [],
+    includeUnassigned: !!body?.includeUnassigned,
+    sources: Array.isArray(body?.sources) ? body.sources.map(String) : [],
+    neverContacted: !!body?.neverContacted,
+});
+
+// GET /api/leads/no-activity/statuses  (?refresh=1 re-runs the AI classification)
+export const getNoActivityStatuses = async (req: express.Request, res: express.Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(403).json({ message: 'No organisation context' });
+        const { getStatusClassification } = await import('../services/noActivityLeadService');
+        const statuses = await getStatusClassification(orgId, req.query.refresh === '1' && isAdmin(user));
+        res.json({ statuses });
+    } catch (error) {
+        console.error('getNoActivityStatuses Error:', error);
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// POST /api/leads/no-activity/cleanup/preview
+export const previewNoActivityCleanup = async (req: express.Request, res: express.Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(403).json({ message: 'No organisation context' });
+        if (!isAdmin(user)) return res.status(403).json({ message: 'Only admins can clean up leads' });
+        const filters = parseCleanupFilters(req.body);
+        if (!filters.statuses.length) return res.status(400).json({ message: 'Select at least one status' });
+        const { previewCleanup } = await import('../services/noActivityLeadService');
+        res.json(await previewCleanup(orgId, filters));
+    } catch (error) {
+        console.error('previewNoActivityCleanup Error:', error);
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+// POST /api/leads/no-activity/cleanup/execute  { ...filters, expectedCount }
+// Soft-deletes (moves to Trash; the existing nightly purge removes them for good after
+// 7 days) exactly the list the admin previewed - refuses if the count has changed.
+export const executeNoActivityCleanup = async (req: express.Request, res: express.Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(403).json({ message: 'No organisation context' });
+        if (!isAdmin(user)) return res.status(403).json({ message: 'Only admins can clean up leads' });
+        const filters = parseCleanupFilters(req.body);
+        if (!filters.statuses.length) return res.status(400).json({ message: 'Select at least one status' });
+        const expectedCount = Number(req.body?.expectedCount);
+        if (!Number.isInteger(expectedCount) || expectedCount <= 0) {
+            return res.status(400).json({ message: 'Preview the list first, then confirm its count' });
+        }
+        const { executeCleanup } = await import('../services/noActivityLeadService');
+        const result = await executeCleanup(orgId, filters, expectedCount);
+        if (!result.ok) {
+            return res.status(409).json({
+                message: `The list changed (now ${result.total} leads, you confirmed ${expectedCount}). Preview again before deleting.`,
+                total: result.total,
+            });
+        }
+        try {
+            const { logAudit } = await import('../utils/auditLogger');
+            logAudit({
+                action: 'BULK_DELETE_NO_ACTIVITY_LEADS',
+                entity: 'Lead',
+                actorId: user.id,
+                organisationId: orgId,
+                details: { filters, deleted: result.deleted },
+            });
+        } catch (e) { /* audit must not block */ }
+        res.json({ deleted: result.deleted });
+    } catch (error) {
+        console.error('executeNoActivityCleanup Error:', error);
         res.status(500).json({ message: (error as Error).message });
     }
 };
