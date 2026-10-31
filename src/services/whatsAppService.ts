@@ -13,6 +13,16 @@ interface WhatsAppConfig {
 import { decrypt } from '../utils/encryption';
 import { WHATSAPP_GRAPH_URL } from '../config/whatsapp';
 
+
+/** Meta's short message is often just "(#100) Invalid parameter"; error_data.details says which field. */
+export function metaErrorMessage(error: any, fallback: string): string {
+    const e = error?.response?.data?.error;
+    if (!e) return fallback;
+    const details = e.error_data?.details;
+    const code = e.code ? ` [code ${e.code}${e.error_subcode ? `/${e.error_subcode}` : ''}]` : '';
+    return `${e.message || fallback}${details ? `: ${details}` : ''}${code}`;
+}
+
 export class WhatsAppService {
     private baseUrl = WHATSAPP_GRAPH_URL;
     private config: WhatsAppConfig;
@@ -88,7 +98,7 @@ export class WhatsAppService {
             }
         }
 
-        throw new Error(lastError.response?.data?.error?.message || 'Failed to fetch data from WhatsApp API');
+        throw new Error(metaErrorMessage(lastError, 'Failed to fetch data from WhatsApp API'));
     }
 
     /**
@@ -107,7 +117,7 @@ export class WhatsAppService {
                     language: {
                         code: languageCode
                     },
-                    components: components
+                    ...(components.length ? { components } : {})
                 }
             };
 
@@ -121,7 +131,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Send Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to send WhatsApp message');
+            throw new Error(metaErrorMessage(error, 'Failed to send WhatsApp message'));
         }
     }
 
@@ -151,7 +161,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Send Text Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to send WhatsApp message');
+            throw new Error(metaErrorMessage(error, 'Failed to send WhatsApp message'));
         }
     }
 
@@ -189,7 +199,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Send Interactive Buttons Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to send WhatsApp interactive message');
+            throw new Error(metaErrorMessage(error, 'Failed to send WhatsApp interactive message'));
         }
     }
 
@@ -237,7 +247,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Send Interactive List Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to send WhatsApp interactive message');
+            throw new Error(metaErrorMessage(error, 'Failed to send WhatsApp interactive message'));
         }
     }
 
@@ -277,7 +287,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Send Media Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to send WhatsApp media message');
+            throw new Error(metaErrorMessage(error, 'Failed to send WhatsApp media message'));
         }
     }
 
@@ -297,7 +307,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Get Message Status Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to get message status');
+            throw new Error(metaErrorMessage(error, 'Failed to get message status'));
         }
     }
 
@@ -317,7 +327,7 @@ export class WhatsAppService {
             return response.data.url;
         } catch (error: any) {
             console.error('WhatsApp Get Media URL Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to get media URL');
+            throw new Error(metaErrorMessage(error, 'Failed to get media URL'));
         }
     }
 
@@ -360,7 +370,7 @@ export class WhatsAppService {
             return response.data.data || [];
         } catch (error: any) {
             console.error('WhatsApp Get Templates Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to get templates');
+            throw new Error(metaErrorMessage(error, 'Failed to get templates'));
         }
     }
 
@@ -390,7 +400,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Create Template Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to create template');
+            throw new Error(metaErrorMessage(error, 'Failed to create template'));
         }
     }
 
@@ -411,7 +421,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Delete Template Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to delete template');
+            throw new Error(metaErrorMessage(error, 'Failed to delete template'));
         }
     }
 
@@ -431,7 +441,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Get Phone Info Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to get phone number info');
+            throw new Error(metaErrorMessage(error, 'Failed to get phone number info'));
         }
     }
 
@@ -458,7 +468,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Mark Read Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to mark message as read');
+            throw new Error(metaErrorMessage(error, 'Failed to mark message as read'));
         }
     }
 
@@ -487,7 +497,7 @@ export class WhatsAppService {
             return response.data.conversation_analytics || {};
         } catch (error: any) {
             console.error('WhatsApp Analytics Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to get conversation analytics');
+            throw new Error(metaErrorMessage(error, 'Failed to get conversation analytics'));
         }
     }
 
@@ -514,7 +524,7 @@ export class WhatsAppService {
             return response.data;
         } catch (error: any) {
             console.error('WhatsApp Upload Media Error:', error.response?.data || error.message);
-            throw new Error(error.response?.data?.error?.message || 'Failed to upload media to WhatsApp');
+            throw new Error(metaErrorMessage(error, 'Failed to upload media to WhatsApp'));
         }
     }
 }
