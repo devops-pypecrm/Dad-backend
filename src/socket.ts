@@ -2,6 +2,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import jwt from 'jsonwebtoken';
 import { logger } from './utils/logger';
+import prisma from './config/prisma';
 
 declare module 'socket.io' {
     interface Socket {
@@ -57,7 +58,7 @@ export const initSocket = (httpServer: HttpServer) => {
 
     ioInstance = io;
 
-    io.use((socket, next) => {
+    io.use(async (socket, next) => {
         const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.split(' ')[1];
         if (!token) {
             return next(new Error('Authentication error: No token provided'));
@@ -66,10 +67,22 @@ export const initSocket = (httpServer: HttpServer) => {
             const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key_change_this') as any;
             socket.userId = decoded.id; // Store userId on socket
             socket.organisationId = decoded.organisationId; // Store organisationId on socket
-            next();
         } catch (err) {
-            next(new Error('Authentication error: Invalid token'));
+            return next(new Error('Authentication error: Invalid token'));
         }
+
+        // Login tokens do not carry the organisation, so without this lookup the socket never joined
+        // its `org:<id>` room and every organisation-wide event (WhatsApp / Instagram messages,
+        // delivery status, lead updates) was emitted to a room the browser was not in.
+        if (!socket.organisationId && socket.userId) {
+            try {
+                const user = await prisma.user.findUnique({ where: { id: socket.userId }, select: { organisationId: true } });
+                socket.organisationId = user?.organisationId || undefined;
+            } catch (err) {
+                logger.error('Socket: could not resolve organisation for user', err, 'SocketID', socket.userId);
+            }
+        }
+        next();
     });
 
     io.on('connection', (socket) => {
