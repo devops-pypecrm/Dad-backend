@@ -145,3 +145,46 @@ export const deleteBranch = async (req: Request, res: Response) => {
         res.status(500).json({ message: (error as Error).message });
     }
 };
+
+// PUT /api/branches/managed-by/:userId  { branchIds: string[] }
+// Makes the user manager of exactly the given branches (a user can manage several), and
+// stops managing any branch of theirs that is not in the list. A branch has one manager,
+// so a selected branch that someone else managed is taken over by this user.
+export const setManagedBranches = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        if (user.role !== 'admin' && user.role !== 'super_admin') {
+            return res.status(403).json({ message: 'Only admins can assign branch managers' });
+        }
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(403).json({ message: 'User has no organisation' });
+
+        const { userId } = req.params;
+        const branchIds: string[] = Array.isArray(req.body.branchIds) ? req.body.branchIds.map(String) : [];
+
+        const target = await prisma.user.findFirst({ where: { id: userId, organisationId: orgId }, select: { id: true } });
+        if (!target) return res.status(404).json({ message: 'User not found' });
+
+        const valid = await prisma.branch.findMany({
+            where: { id: { in: branchIds }, organisationId: orgId, isDeleted: false },
+            select: { id: true, managerId: true }
+        });
+        const validIds = valid.map(b => b.id);
+        const takenOver = valid.filter(b => b.managerId && b.managerId !== userId).length;
+
+        await prisma.$transaction([
+            prisma.branch.updateMany({
+                where: { organisationId: orgId, managerId: userId, isDeleted: false, id: { notIn: validIds } },
+                data: { managerId: null }
+            }),
+            prisma.branch.updateMany({
+                where: { id: { in: validIds } },
+                data: { managerId: userId }
+            })
+        ]);
+
+        res.json({ userId, branchIds: validIds, takenOver });
+    } catch (error) {
+        res.status(400).json({ message: (error as Error).message });
+    }
+};

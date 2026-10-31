@@ -4,7 +4,8 @@ import {
     createBranch,
     getBranches,
     updateBranch,
-    deleteBranch
+    deleteBranch,
+    setManagedBranches
 } from '../controllers/branchController';
 
 const router = express.Router();
@@ -12,6 +13,8 @@ const router = express.Router();
 router.route('/')
     .get(protect, getBranches)
     .post(protect, createBranch);
+
+router.put('/managed-by/:userId', protect, setManagedBranches);
 
 router.route('/:id')
     .put(protect, updateBranch)
