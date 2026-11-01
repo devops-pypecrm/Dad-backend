@@ -16,7 +16,7 @@ const wrap = (err: any): never => {
 export const ig = {
     async get<T = any>(path: string, token: string, params: Record<string, any> = {}): Promise<T> {
         try {
-            const { data } = await axios.get(`${IG_GRAPH}/${path}`, { params, headers: { Authorization: `Bearer ${token}` }, timeout: 20000 });
+            const { data } = await axios.get(`${IG_GRAPH}/${path}`, { params: { ...params, access_token: token }, timeout: 20000 });
             return data;
         } catch (err) { return wrap(err); }
     },

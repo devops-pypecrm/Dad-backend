@@ -7,6 +7,17 @@ import { ig, InstagramApiError } from './instagramApi';
 
 const STATE_SECRET = () => process.env.JWT_SECRET || instagramConfig().appSecret;
 
+/** Instagram returns the first token either flat `{ access_token, user_id }` or wrapped `{ data: [{ ... }] }`. */
+export function parseShortLivedToken(raw: any): { accessToken?: string; userId?: string; permissions: string[] } {
+    const row = Array.isArray(raw?.data) ? raw.data[0] : raw;
+    const perms = row?.permissions;
+    return {
+        accessToken: row?.access_token || undefined,
+        userId: row?.user_id != null ? String(row.user_id) : undefined,
+        permissions: Array.isArray(perms) ? perms : typeof perms === 'string' ? perms.split(',').map((p: string) => p.trim()).filter(Boolean) : []
+    };
+}
+
 export const InstagramAuthService = {
     /** Login URL the user is sent to. State is a short-lived signed token so the callback can't be forged. */
     buildAuthUrl(params: { organisationId: string; userId: string; returnPath: string }) {
@@ -29,19 +40,28 @@ export const InstagramAuthService = {
     async exchangeCode(code: string) {
         const c = instagramConfig();
         const form = new URLSearchParams({ client_id: c.appId, client_secret: c.appSecret, grant_type: 'authorization_code', redirect_uri: c.redirectUri, code });
-        let short: { access_token: string; user_id?: string | number; permissions?: string[] };
+
+        let raw: any;
         try {
-            short = (await axios.post(IG_OAUTH_TOKEN, form.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 20000 })).data;
+            raw = (await axios.post(IG_OAUTH_TOKEN, form.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 20000 })).data;
         } catch (err: any) {
-            throw new InstagramApiError(err.response?.data?.error_message || err.response?.data?.error?.message || 'Instagram login failed', err.response?.data?.code, err.response?.status);
+            const d = err.response?.data;
+            throw new InstagramApiError(`Step 1 (login code exchange) failed: ${d?.error_message || d?.error?.message || err.message}`, d?.code, err.response?.status);
         }
+        const short = parseShortLivedToken(raw);
+        if (!short.accessToken) {
+            console.error('[Instagram OAuth] unexpected token response shape:', JSON.stringify(raw)?.slice(0, 200).replace(/"access_token":"[^"]+"/g, '"access_token":"***"'));
+            throw new InstagramApiError('Step 1 (login code exchange) returned no access token. Check the redirect URI and app settings in the Instagram dashboard.');
+        }
+
         let long: { access_token: string; expires_in: number };
         try {
-            long = (await axios.get('https://graph.instagram.com/access_token', { params: { grant_type: 'ig_exchange_token', client_secret: c.appSecret, access_token: short.access_token }, timeout: 20000 })).data;
+            long = (await axios.get('https://graph.instagram.com/access_token', { params: { grant_type: 'ig_exchange_token', client_secret: c.appSecret, access_token: short.accessToken }, timeout: 20000 })).data;
         } catch (err: any) {
-            throw new InstagramApiError(err.response?.data?.error?.message || 'Could not get a long-lived Instagram token', err.response?.data?.error?.code, err.response?.status);
+            const d = err.response?.data?.error;
+            throw new InstagramApiError(`Step 2 (long-lived token) failed: ${d?.message || err.message}`, d?.code, err.response?.status);
         }
-        return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), scopes: short.permissions || IG_SCOPES };
+        return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), scopes: short.permissions.length ? short.permissions : IG_SCOPES };
     },
 
     async fetchProfile(token: string) {
@@ -58,7 +78,9 @@ export const InstagramAuthService = {
     /** Complete a connect: store (encrypted) token, profile, webhook subscription. */
     async connect(organisationId: string, userId: string, code: string) {
         const { token, expiresAt, scopes } = await this.exchangeCode(code);
-        const profile = await this.fetchProfile(token);
+        let profile: Awaited<ReturnType<typeof this.fetchProfile>>;
+        try { profile = await this.fetchProfile(token); }
+        catch (err: any) { throw new InstagramApiError(`Step 3 (reading your Instagram profile) failed: ${err.message}`, err.code, err.status); }
         if (!profile.user_id) throw new Error('Instagram did not return an account id.');
 
         // One Instagram account can belong to one organisation only (webhooks are routed by account id).
