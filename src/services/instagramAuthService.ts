@@ -59,7 +59,17 @@ export const InstagramAuthService = {
             long = (await axios.get('https://graph.instagram.com/access_token', { params: { grant_type: 'ig_exchange_token', client_secret: c.appSecret, access_token: short.accessToken }, timeout: 20000 })).data;
         } catch (err: any) {
             const d = err.response?.data?.error;
-            throw new InstagramApiError(`Step 2 (long-lived token) failed: ${d?.message || err.message}`, d?.code, err.response?.status);
+            console.error('[Instagram OAuth] step 2 failed, Instagram replied:', JSON.stringify(err.response?.data || err.message).slice(0, 600));
+
+            // Work out why: can the fresh short-lived token even read this account's profile?
+            let hint: string;
+            try {
+                const p = await ig.get<{ username?: string; account_type?: string }>('me', short.accessToken, { fields: 'user_id,username,account_type' });
+                hint = ` Login worked for @${p.username || 'this account'} (account type: ${p.account_type || 'unknown'}), so check the Instagram app secret and that the app is set up for "API setup with Instagram login".`;
+            } catch (probe: any) {
+                hint = ` Instagram also refused to read this account with the new token (${probe.message}). The account is probably a personal Instagram account: it must be a Business or Creator account, and while the app is in development mode it must be added as an Instagram Tester.`;
+            }
+            throw new InstagramApiError(`Step 2 (long-lived token) failed: ${d?.message || err.message}.${hint}`, d?.code, err.response?.status);
         }
         return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), scopes: short.permissions.length ? short.permissions : IG_SCOPES };
     },
