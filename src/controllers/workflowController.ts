@@ -26,6 +26,17 @@ export const getWorkflows = async (req: Request, res: Response) => {
             where.name = { contains: search, mode: 'insensitive' };
         }
 
+        // Optional filters. WhatsApp keyword automations are workflows triggered by "WhatsAppMessage";
+        // they are managed inside the WhatsApp section, so the general Automation pages exclude them.
+        if (typeof req.query.triggerEntity === 'string' && req.query.triggerEntity) {
+            where.triggerEntity = req.query.triggerEntity;
+        } else if (typeof req.query.excludeTriggerEntity === 'string' && req.query.excludeTriggerEntity) {
+            where.triggerEntity = { not: req.query.excludeTriggerEntity };
+        }
+        if (req.query.isActive === 'true' || req.query.isActive === 'false') {
+            where.isActive = req.query.isActive === 'true';
+        }
+
         const count = await prisma.workflow.count({ where });
         const workflows = await prisma.workflow.findMany({
             where,
