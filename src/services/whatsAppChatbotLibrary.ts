@@ -152,27 +152,33 @@ export function buildFlowFromTemplate(t: ChatbotTemplate): { nodes: any[]; edges
     const edge = (source: string, target: string, sourceHandle?: string) =>
         edges.push({ id: `e${++edgeN}`, source, target, ...(sourceHandle ? { sourceHandle } : {}) });
 
+    // Compact top-to-bottom layout that fits a normal screen:
+    //   greeting (centre) -> up to 3 replies in a row -> the capture questions in a column -> hand-off
     const menu = t.menu.slice(0, 3);
+    const COL = 280;
+    const centreX = (menu.length - 1) * COL / 2;
+
     nodes.push({
-        id: 'start', type: 'buttons', position: { x: 0, y: 160 },
+        id: 'start', type: 'buttons', position: { x: centreX, y: 0 },
         data: { label: 'Greeting', message: t.greeting, buttons: menu.map((m, i) => ({ id: `opt${i + 1}`, title: m.title.slice(0, 20) })) }
     });
 
-    // each menu choice -> its reply -> shared capture chain
     const captureIds = t.capture.map((_, i) => `capture${i + 1}`);
     const firstShared = captureIds[0] || 'handoff';
     menu.forEach((m, i) => {
         const id = `reply${i + 1}`;
-        nodes.push({ id, type: 'message', position: { x: 320, y: i * 160 }, data: { label: m.title, message: m.reply } });
+        nodes.push({ id, type: 'message', position: { x: i * COL, y: 180 }, data: { label: m.title, message: m.reply } });
         edge('start', id, `opt${i + 1}`);
         edge(id, firstShared);
     });
 
+    let y = 360;
     t.capture.forEach((c, i) => {
-        nodes.push({ id: captureIds[i], type: 'form_input', position: { x: 640 + i * 300, y: 160 }, data: { label: `Ask ${i + 1}`, message: c.prompt } });
+        nodes.push({ id: captureIds[i], type: 'form_input', position: { x: centreX, y }, data: { label: `Ask ${i + 1}`, message: c.prompt } });
         edge(captureIds[i], captureIds[i + 1] || 'handoff');
+        y += 160;
     });
 
-    nodes.push({ id: 'handoff', type: 'agent_handoff', position: { x: 640 + t.capture.length * 300, y: 160 }, data: { label: 'Hand off to team', message: t.closing } });
+    nodes.push({ id: 'handoff', type: 'agent_handoff', position: { x: centreX, y }, data: { label: 'Hand off to team', message: t.closing } });
     return { nodes, edges };
 }

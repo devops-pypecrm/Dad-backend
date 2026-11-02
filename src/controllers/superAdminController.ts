@@ -575,8 +575,38 @@ export const getFeatureSettings = async (req: Request, res: Response) => {
             orderBy: { name: 'asc' }
         });
 
+        // Platform-level Meta app configuration (one app for every organisation). Only whether each
+        // secret is configured is reported, never its value.
+        const base = (process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+        const setupFor = (key: string) => {
+            if (key === 'whatsapp') {
+                return {
+                    callbackUrl: `${base}/api/whatsapp/webhook`,
+                    subscribedFields: ['messages', 'message_template_status_update', 'phone_number_quality_update'],
+                    checks: [
+                        { label: 'Verify token (WHATSAPP_VERIFY_TOKEN)', ok: !!process.env.WHATSAPP_VERIFY_TOKEN },
+                        { label: 'App secret (WHATSAPP_APP_SECRET)', ok: !!(process.env.WHATSAPP_APP_SECRET || process.env.WHATSAPP_WEBHOOK_SECRET) },
+                        { label: 'Meta app ID and secret (META_APP_ID, META_APP_SECRET)', ok: !!(process.env.META_APP_ID && process.env.META_APP_SECRET) }
+                    ]
+                };
+            }
+            if (key === 'instagram') {
+                return {
+                    callbackUrl: `${base}/api/instagram/webhook`,
+                    oauthRedirectUri: process.env.INSTAGRAM_REDIRECT_URI || `${base}/api/instagram/callback`,
+                    subscribedFields: ['messages', 'messaging_postbacks', 'messaging_seen', 'comments'],
+                    checks: [
+                        { label: 'Verify token (INSTAGRAM_VERIFY_TOKEN)', ok: !!process.env.INSTAGRAM_VERIFY_TOKEN },
+                        { label: 'Instagram app ID (INSTAGRAM_APP_ID)', ok: !!process.env.INSTAGRAM_APP_ID },
+                        { label: 'Instagram app secret (INSTAGRAM_APP_SECRET)', ok: !!process.env.INSTAGRAM_APP_SECRET }
+                    ]
+                };
+            }
+            return null;
+        };
+
         res.json({
-            features: PLATFORM_FEATURES.map(f => ({ ...f, enabledCount: organisations.filter(o => o.enabledFeatures.includes(f.key)).length })),
+            features: PLATFORM_FEATURES.map(f => ({ ...f, enabledCount: organisations.filter(o => o.enabledFeatures.includes(f.key)).length, setup: setupFor(f.key) })),
             organisations
         });
     } catch (error: any) {

@@ -293,17 +293,10 @@ export const settingsOverview = handle(async (req, res) => {
         prisma.whatsAppOptOut.count({ where: { organisationId: orgId } }),
         prisma.whatsAppAssignmentRule.count({ where: { organisationId: orgId, isDeleted: false } })
     ]);
-    const serverUrl = process.env.SERVER_URL || '';
     res.json({
         accounts: accounts.map(({ accessToken, ...a }) => ({ ...a, hasToken: !!accessToken })),
         optOutCount: optOuts,
-        assignmentRules,
-        webhook: {
-            callbackUrl: `${serverUrl}/api/whatsapp/webhook`,
-            verifyTokenConfigured: !!process.env.WHATSAPP_VERIFY_TOKEN,
-            appSecretConfigured: !!(process.env.WHATSAPP_APP_SECRET || process.env.WHATSAPP_WEBHOOK_SECRET),
-            subscribedFields: ['messages', 'message_template_status_update', 'phone_number_quality_update']
-        }
+        assignmentRules
     });
 });
 export const refreshAccountHealth = handle(async (req, res) => {
