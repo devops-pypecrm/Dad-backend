@@ -108,6 +108,12 @@ export const createProduct = async (req: Request, res: Response) => {
                 isActive: req.body.isActive !== undefined ? Boolean(req.body.isActive) : undefined,
                 isCustom: req.body.isCustom !== undefined ? Boolean(req.body.isCustom) : undefined,
                 brochureUrl: req.body.brochureUrl,
+                // Also previously dropped on create (unlike updateProduct, which
+                // passes req.body straight through) - every new product silently
+                // landed on the schema defaults ("unit", 0% tax) no matter what
+                // the Add Product form's Unit/Tax Rate fields actually had in them.
+                unit: req.body.unit !== undefined && req.body.unit !== '' ? req.body.unit : undefined,
+                taxRate: req.body.taxRate !== undefined ? Number(req.body.taxRate) : undefined,
                 organisation: { connect: { id: orgId } },
                 createdBy: { connect: { id: user.id } },
                 ...(requestedBranchId ? { branch: { connect: { id: requestedBranchId } } } : {})

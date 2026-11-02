@@ -58,6 +58,7 @@ import salesTargetRoutes from './routes/salesTargetRoutes';
 import trainingRoutes from './routes/trainingRoutes';
 import callRoutes from './routes/callRoutes';
 import callSettingsRoutes from './routes/callSettingsRoutes';
+import whatsappPersonalTemplateRoutes from './routes/whatsappPersonalTemplateRoutes';
 import backupRoutes from './routes/backupRoutes';
 import reportRoutes from './routes/reportRoutes';
 import importRoutes from './routes/importRoutes';
@@ -374,6 +375,7 @@ app.use('/api/interactions', interactionRoutes);
 import telephonyRoutes from './routes/telephonyRoutes';
 app.use('/api/calls', callRoutes);
 app.use('/api/call-settings', callSettingsRoutes);
+app.use('/api/whatsapp-templates', whatsappPersonalTemplateRoutes);
 app.use('/api/telephony', telephonyRoutes);
 
 

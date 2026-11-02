@@ -107,6 +107,7 @@ model Organisation {
   emiSchedules            EMISchedule[]
   paymentRecords          PaymentRecord[]
   helperActivityLogs      HelperActivityLog[]
+  whatsAppPersonalTemplates WhatsAppPersonalTemplate[]
   shufflerConfig          Json?
   convertedFromEnquiry    Enquiry?
 }
@@ -229,6 +230,7 @@ model User {
   helperActivityLogs             HelperActivityLog[]
   reviewedEnquiries              Enquiry[]
   sentBroadcasts                 Broadcast[]              @relation("BroadcastSender")
+  whatsAppPersonalTemplates       WhatsAppPersonalTemplate[]
 
   @@index([organisationId])
   @@index([email])
@@ -1924,6 +1926,30 @@ model HelperActivityLog {
   @@index([organisationId, createdAt])
   @@index([userId, createdAt])
   @@index([createdAt])
+}
+
+// Personal WhatsApp message templates for the mobile app's "send via
+// WhatsApp" quick action (wa.me deep link into the user's own WhatsApp app
+// — not the Meta Cloud API, no template approval needed since nothing is
+// sent through Meta's business messaging platform at all). Deliberately
+// scoped ONLY by userId everywhere it's read/written (see
+// whatsappPersonalTemplateController.ts) — strictly private per user, with
+// NO admin/org-wide visibility carve-out, unlike almost every other model
+// in this schema. organisationId is kept only for cascade-delete hygiene
+// when an org is deleted, never used to scope a query.
+model WhatsAppPersonalTemplate {
+  id             String   @id @default(uuid())
+  organisationId String
+  userId         String
+  title          String
+  body           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Document {
