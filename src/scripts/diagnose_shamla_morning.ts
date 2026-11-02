@@ -20,7 +20,7 @@ async function main() {
     console.log(`\n${todayCalls.length} calls today, earliest first:`);
     for (const c of todayCalls) {
         const istTime = new Date(c.date.getTime() + istOffset).toISOString().replace('T', ' ').slice(0, 19);
-        console.log(`  ${istTime} IST | dir=${c.direction} status=${c.callStatus} duration=${c.duration}min (${(c.duration * 60).toFixed(0)}s) hwDur=${c.hardwareDuration}s recDur=${c.recordingDuration}s phone=${c.phoneNumber}`);
+        console.log(`  ${istTime} IST | dir=${c.direction} status=${c.callStatus} duration=${c.duration}min (${((c.duration ?? 0) * 60).toFixed(0)}s) hwDur=${c.hardwareDuration}s recDur=${c.recordingDuration}s phone=${c.phoneNumber}`);
     }
 
     // Also check yesterday in case "this morning" was meant loosely / timezone confusion
