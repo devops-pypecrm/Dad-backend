@@ -1,3 +1,4 @@
+import { billingOverview, listInvoices, getInvoice, previewBilling, generateInvoices, runMonthlyNow, updateInvoice, deleteInvoice, updateOrgBilling, setOrgSuspended } from '../controllers/billingController';
 import express from 'express';
 import {
     getAllOrganisations,
@@ -76,6 +77,18 @@ router.delete('/organisations/:id', protect, deleteOrganisation); // Soft delete
 router.delete('/organisations/:id/permanent', protect, permanentlyDeleteOrganisation); // Permanent delete (super admin only)
 router.post('/organisations/:id/restore', protect, restoreOrganisation); // Restore deleted org
 router.post('/organisations/:id/suspend', protect, suspendOrganisation);
+
+// Billing (platform invoices to client organisations)
+router.get('/billing/overview', protect, billingOverview);
+router.get('/billing/invoices', protect, listInvoices);
+router.get('/billing/invoices/:id', protect, getInvoice);
+router.get('/billing/preview', protect, previewBilling);
+router.post('/billing/generate', protect, generateInvoices);
+router.post('/billing/run-monthly', protect, runMonthlyNow);
+router.patch('/billing/invoices/:id', protect, updateInvoice);
+router.delete('/billing/invoices/:id', protect, deleteInvoice);
+router.patch('/billing/organisations/:id', protect, updateOrgBilling);
+router.post('/billing/organisations/:id/suspension', protect, setOrgSuspended);
 
 // License Plans Management
 router.get('/plans', protect, getPlans);

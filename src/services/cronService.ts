@@ -25,13 +25,7 @@ export const initCronJobs = () => {
     cron.schedule('0 0 * * *', async () => {
         console.log('[Cron] Daily lead rollover is disabled (keeping original follow-up dates unchanged).');
 
-        console.log('[Cron] Running daily license expiry check...');
-        try {
-            const { LicenseEnforcementService } = await import('./licenseEnforcementService');
-            await LicenseEnforcementService.enforceExpiry();
-        } catch (error) {
-            console.error('[Cron] Error running license expiry check:', error);
-        }
+        // Automatic suspension (expired license / unpaid bill) is intentionally OFF — super admin suspends manually from Billing.
 
         console.log('[Cron] Running daily sales target expiration check...');
         try {
@@ -284,6 +278,15 @@ export const initCronJobs = () => {
     const refreshRates = async () => { try { const n = await fetchAndStoreLatestRates(); console.log(`[Cron] FX rates stored: ${n}`); } catch (e: any) { console.error('[Cron] FX rate fetch failed:', e.message); } };
     cron.schedule('10 0 * * *', refreshRates);
     prismaMain.exchangeRate.count({ where: { date: todayStr() } }).then((c) => { if (!c) refreshRates(); }).catch(() => {});
+
+    // 1st of every month, 01:00: invoice the previous month for every billable organisation
+    cron.schedule('0 1 1 * *', async () => {
+        try {
+            const { generatePreviousMonthInvoices } = await import('./billingService');
+            const r = await generatePreviousMonthInvoices(true);
+            console.log(`[Cron] Monthly billing: ${JSON.stringify(r)}`);
+        } catch (e: any) { console.error('[Cron] Monthly billing failed:', e.message); }
+    }, { timezone: 'Asia/Kolkata' });
 
     // Run every day at 02:00 AM (Trash Purge - 7 Days)
     cron.schedule('0 2 * * *', async () => {
