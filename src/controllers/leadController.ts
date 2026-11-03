@@ -2348,6 +2348,8 @@ export const getReEnquiryHistory = async (req: express.Request, res: express.Res
                 phone: snapshot?.submittedPhone || null,
                 email: snapshot?.submittedEmail || null,
                 source: snapshot?.source || null,
+                // campaign / ad / form / message that came with this particular submission
+                details: snapshot?.details || null,
                 hasFullSnapshot: !!(snapshot?.submittedPhone || snapshot?.submittedEmail),
                 alreadySplitLeadId: snapshot?.splitIntoLeadId || null
             };
