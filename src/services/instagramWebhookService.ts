@@ -16,6 +16,23 @@ const attachmentType = (a: any): string => {
     return 'unsupported';
 };
 
+const firstString = (...values: unknown[]): string | undefined =>
+    values.find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+const mediaContent = (attachment: any, share?: any) => {
+    const payload = attachment?.payload || {};
+    const shared = share || payload?.share || {};
+    const rawUrl = firstString(payload.url, shared.url);
+    const isInstagramPage = Boolean(rawUrl && /^https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel|tv)\//i.test(rawUrl));
+    return {
+        mediaUrl: firstString(payload.media_url, payload.video_url, payload.src, shared.media_url, shared.video_url, isInstagramPage ? undefined : rawUrl),
+        thumbnailUrl: firstString(payload.thumbnail_url, payload.preview_url, payload.image_url, shared.thumbnail_url, shared.image_url),
+        permalink: firstString(payload.permalink, payload.link, shared.permalink, shared.link, isInstagramPage ? rawUrl : undefined),
+        title: firstString(payload.title, shared.title),
+        mediaType: firstString(payload.media_type, shared.media_type, attachment?.type),
+    };
+};
+
 export const InstagramWebhookService = {
     async handle(payload: any) {
         if (payload?.object !== 'instagram') return;
@@ -79,8 +96,14 @@ export const InstagramWebhookService = {
         let messageType = 'text';
         const content: any = { text: m.text || '' };
         const att = (m.attachments || [])[0];
-        if (m.reply_to?.story) { messageType = 'story_reply'; content.mediaUrl = m.reply_to.story.url; }
-        else if (att) { messageType = attachmentType(att); content.mediaUrl = att.payload?.url; }
+        const share = (m.shares || [])[0];
+        if (m.reply_to?.story) {
+            messageType = 'story_reply';
+            Object.assign(content, mediaContent({ type: 'image', payload: m.reply_to.story }));
+        } else if (att || share) {
+            messageType = share ? 'share' : attachmentType(att);
+            Object.assign(content, mediaContent(att, share));
+        }
 
         // Profile for new conversations (name / username / avatar), best effort.
         const existing = await prisma.instagramConversation.findUnique({ where: { accountId_igsid: { accountId: account.id, igsid } } });

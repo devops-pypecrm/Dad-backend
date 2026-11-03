@@ -75,8 +75,8 @@ export const InstagramAuthService = {
     },
 
     async fetchProfile(token: string) {
-        return ig.get<{ user_id: string; username: string; name?: string; account_type?: string; profile_picture_url?: string; followers_count?: number; media_count?: number }>(
-            'me', token, { fields: 'user_id,username,name,account_type,profile_picture_url,followers_count,media_count' }
+        return ig.get<{ user_id: string; username: string; name?: string; biography?: string; account_type?: string; profile_picture_url?: string; followers_count?: number; follows_count?: number; media_count?: number }>(
+            'me', token, { fields: 'user_id,username,name,biography,account_type,profile_picture_url,followers_count,follows_count,media_count' }
         );
     },
 

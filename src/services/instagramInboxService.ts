@@ -61,16 +61,17 @@ export const InstagramInboxService = {
         }
     },
 
-    async list(p: { organisationId: string; userId: string; visibleUserIds: string[] | null; view?: string; status?: string; search?: string; cursor?: string; limit?: number }) {
+    async list(p: { organisationId: string; userId: string; visibleUserIds: string[] | null; assigneeId?: string; view?: string; status?: string; search?: string; cursor?: string; limit?: number }) {
         const where: any = { organisationId: p.organisationId, isDeleted: false };
-        if (p.visibleUserIds) where.OR = [{ assigneeId: { in: p.visibleUserIds } }, { assigneeId: null }];
+        if (p.visibleUserIds) where.AND = [{ assigneeId: { in: p.visibleUserIds } }];
+        if (!p.visibleUserIds && p.assigneeId) where.AND = [{ assigneeId: p.assigneeId }];
         if (p.view === 'mine') where.assigneeId = p.userId;
         if (p.view === 'unassigned') where.assigneeId = null;
         if (p.view === 'unread') where.unreadCount = { gt: 0 };
         if (p.status && p.status !== 'all') where.status = p.status;
         if (p.search) {
             const q = p.search.trim();
-            where.AND = [{ OR: [{ username: { contains: q, mode: 'insensitive' } }, { displayName: { contains: q, mode: 'insensitive' } }, { lastMessagePreview: { contains: q, mode: 'insensitive' } }] }];
+            where.AND = [...(where.AND || []), { OR: [{ username: { contains: q, mode: 'insensitive' } }, { displayName: { contains: q, mode: 'insensitive' } }, { lastMessagePreview: { contains: q, mode: 'insensitive' } }] }];
         }
         const limit = Math.min(p.limit || 50, 100);
         const rows = await prisma.instagramConversation.findMany({ where, orderBy: { lastMessageAt: 'desc' }, take: limit + 1, ...(p.cursor ? { cursor: { id: p.cursor }, skip: 1 } : {}) });
@@ -85,9 +86,10 @@ export const InstagramInboxService = {
         };
     },
 
-    async counts(organisationId: string, userId: string, visibleUserIds: string[] | null) {
+    async counts(organisationId: string, userId: string, visibleUserIds: string[] | null, assigneeId?: string) {
         const base: any = { organisationId, isDeleted: false };
-        if (visibleUserIds) base.OR = [{ assigneeId: { in: visibleUserIds } }, { assigneeId: null }];
+        if (visibleUserIds) base.AND = [{ assigneeId: { in: visibleUserIds } }];
+        if (!visibleUserIds && assigneeId) base.AND = [{ assigneeId }];
         const [all, mine, unassigned, unread] = await Promise.all([
             prisma.instagramConversation.count({ where: { ...base, status: { not: 'resolved' } } }),
             prisma.instagramConversation.count({ where: { ...base, assigneeId: userId, status: { not: 'resolved' } } }),

@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { instagramConfig, isInstagramConfigured } from '../config/instagram';
-import { getVisibleUserIds } from '../utils/hierarchyUtils';
 import { hasOrgWideVisibility } from '../utils/roleUtils';
 import { HttpError, handle, orgOf, str } from '../utils/whatsappHttp';
 import { InstagramAuthService } from '../services/instagramAuthService';
@@ -14,7 +13,7 @@ import { isInstagramEnabled } from '../services/whatsAppFeature';
 import { WhatsAppService } from '../services/whatsAppService';
 
 const userOf = (req: Request) => (req as any).user as { id: string; role: any; organisationId: string };
-const visibility = async (req: Request): Promise<string[] | null> => (hasOrgWideVisibility(userOf(req)) ? null : await getVisibleUserIds(userOf(req).id));
+const visibility = async (req: Request): Promise<string[] | null> => (hasOrgWideVisibility(userOf(req)) ? null : [userOf(req).id]);
 
 // ===================== webhook (public) =====================
 export const verifyWebhook = (req: Request, res: Response) => {
@@ -87,15 +86,21 @@ const loadConversation = async (req: Request) => {
     const convo = await prisma.instagramConversation.findFirst({ where: { id: req.params.id, organisationId: orgId, isDeleted: false } });
     if (!convo) throw new HttpError(404, 'Conversation not found');
     const visible = await visibility(req);
-    if (visible && convo.assigneeId && !visible.includes(convo.assigneeId)) throw new HttpError(403, 'You do not have access to this conversation');
+    if (visible && (!convo.assigneeId || !visible.includes(convo.assigneeId))) throw new HttpError(403, 'You do not have access to this conversation');
     return { orgId, convo };
 };
 
 export const listConversations = handle(async (req, res) => {
     const q = req.query as Record<string, string>;
-    res.json(await InstagramInboxService.list({ organisationId: orgOf(req), userId: userOf(req).id, visibleUserIds: await visibility(req), view: q.view, status: q.status, search: q.search, cursor: q.cursor }));
+    const visibleUserIds = await visibility(req);
+    const assigneeId = visibleUserIds === null && q.assigneeId ? q.assigneeId : undefined;
+    res.json(await InstagramInboxService.list({ organisationId: orgOf(req), userId: userOf(req).id, visibleUserIds, assigneeId, view: visibleUserIds ? 'mine' : q.view, status: q.status, search: q.search, cursor: q.cursor }));
 });
-export const conversationCounts = handle(async (req, res) => { res.json(await InstagramInboxService.counts(orgOf(req), userOf(req).id, await visibility(req))); });
+export const conversationCounts = handle(async (req, res) => {
+    const visibleUserIds = await visibility(req);
+    const assigneeId = visibleUserIds === null && typeof req.query.assigneeId === 'string' ? req.query.assigneeId : undefined;
+    res.json(await InstagramInboxService.counts(orgOf(req), userOf(req).id, visibleUserIds, assigneeId));
+});
 
 export const getConversation = handle(async (req, res) => {
     const { convo } = await loadConversation(req);
@@ -132,6 +137,7 @@ export const updateConversation = handle(async (req, res) => {
     const { assigneeId, status, labels } = req.body || {};
     const data: any = {};
     if (assigneeId !== undefined) {
+        if (!hasOrgWideVisibility(userOf(req))) throw new HttpError(403, 'Only an administrator can assign conversations');
         if (assigneeId !== null && !(await prisma.user.findFirst({ where: { id: assigneeId, organisationId: orgId, isDeleted: false } }))) throw new HttpError(400, 'That user is not in your organisation');
         data.assigneeId = assigneeId;
         if (assigneeId) data.botPausedUntil = new Date(Date.now() + 60 * 60_000);
@@ -257,12 +263,25 @@ const requireAccount = async (orgId: string) => {
 export const gateOverview = handle(async (req, res) => {
     const orgId = orgOf(req);
     const account = await InstagramAuthService.getAccount(orgId);
+    let liveProfile: Awaited<ReturnType<typeof InstagramAuthService.fetchProfile>> | null = null;
+    if (account?.status === 'active') {
+        try { liveProfile = await InstagramAuthService.fetchProfile(InstagramAuthService.token(account)); }
+        catch (err: any) { console.warn('[Instagram] Could not refresh profile counts:', err.message); }
+    }
     const bots = await prisma.instagramGateBot.findMany({ where: { organisationId: orgId, isDeleted: false }, orderBy: { createdAt: 'desc' } });
     const events = bots.length ? await prisma.instagramGateEvent.groupBy({ by: ['botId', 'state'], where: { botId: { in: bots.map(b => b.id) } }, _count: true }) : [];
     const ev = (id: string, state: string) => events.find(e => e.botId === id && e.state === state)?._count || 0;
     res.json({
         connected: !!account && account.status === 'active',
-        account: account ? { username: account.username, name: account.name, profilePicUrl: account.profilePicUrl, followersCount: account.followersCount } : null,
+        account: account ? {
+            username: liveProfile?.username || account.username,
+            name: liveProfile?.name || account.name,
+            biography: liveProfile?.biography ?? null,
+            profilePicUrl: liveProfile?.profile_picture_url || account.profilePicUrl,
+            followersCount: liveProfile?.followers_count ?? account.followersCount,
+            followingCount: liveProfile?.follows_count ?? null,
+            mediaCount: liveProfile?.media_count ?? account.mediaCount
+        } : null,
         stats: { total: bots.length, active: bots.filter(b => b.isActive).length, inactive: bots.filter(b => !b.isActive).length },
         bots: bots.map(b => ({ ...b, comments: ev(b.id, 'asked') + ev(b.id, 'rewarded') + ev(b.id, 'failed'), rewarded: ev(b.id, 'rewarded') }))
     });
