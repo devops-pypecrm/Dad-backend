@@ -138,9 +138,15 @@ export const getOpportunities = async (req: Request, res: Response) => {
             // current month range), which is exactly what getExpectedRevenueReport already
             // avoids by never date-filtering its own open-deals query.
             const stage = req.query.stage ? String(req.query.stage) : '';
+            const OPEN_STAGES = ['prospecting', 'qualification', 'proposal', 'negotiation'];
             if (stage === 'closed_won' || stage === 'closed_lost') {
                 where.closeDate = dateFilter;
-            } else if (stage !== 'expected') {
+            } else if (stage === '' || stage === 'all') {
+                // Mixed list: open deals are always shown (carried forward from earlier months);
+                // only closed deals are sliced by the month they closed.
+                if (!where.AND) where.AND = [];
+                (where.AND as any[]).push({ OR: [{ stage: { in: OPEN_STAGES } }, { stage: { in: ['closed_won', 'closed_lost'] }, closeDate: dateFilter }] });
+            } else if (stage !== 'expected' && !OPEN_STAGES.includes(stage)) {
                 where.createdAt = dateFilter;
             }
         }

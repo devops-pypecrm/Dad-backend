@@ -200,7 +200,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     ...combinedFilter, 
                     isDeleted: false, 
                     ...oppVisibilityFilter,
-                    ...(oppDateFilter ? oppDateFilter : {})
+                    ...(oppDateFilter ? { OR: [{ stage: { notIn: ['closed_won', 'closed_lost'] } }, oppDateFilter] } : {})
                 },
                 _sum: { amount: true }
             }),
@@ -287,12 +287,13 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     ...oppVisibilityFilter
                 }
             }),
+            // Open deals always count (carried forward); closed deals count in the period they closed.
             prisma.opportunity.count({ 
                 where: { 
                     ...combinedFilter, 
                     isDeleted: false, 
                     ...oppVisibilityFilter,
-                    ...(oppDateFilter ? oppDateFilter : {})
+                    ...(oppDateFilter ? { OR: [{ stage: { notIn: ['closed_won', 'closed_lost'] } }, oppDateFilter] } : {})
                 } 
             }),
 
@@ -544,16 +545,18 @@ export const getSalesForecast = async (req: Request, res: Response) => {
             visibilityFilter.ownerId = { in: visibleUserIds };
         }
 
-        const oppDateFilter = getDateFilter(req, 'closeDate');
-
-        // Get open opportunities (not closed_won or closed_lost)
+        // Expected revenue is a live snapshot of every open deal, not a per-period slice:
+        // anything expected in an earlier month that is still open carries forward into the
+        // current month (and stays until it is won/lost). Filtering open deals by closeDate
+        // dropped carried-forward and undated deals on "This month" but showed them on
+        // "Last month"/"All time". Matches the Pipeline tile, the Opportunities 'expected'
+        // list and getExpectedRevenueReport's totalExpectedRevenue.
         const openOpportunities = await prisma.opportunity.findMany({
             where: {
                 ...combinedFilter,
                 stage: { notIn: ['closed_won', 'closed_lost'] },
                 isDeleted: false,
-                ...visibilityFilter,
-                ...(oppDateFilter ? oppDateFilter : {})
+                ...visibilityFilter
             },
             select: {
                 amount: true,
