@@ -83,6 +83,7 @@ import publicRoutes from './routes/publicRoutes';
 import teamRoutes from './routes/teamRoutes';
 import branchRoutes from './routes/branchRoutes';
 import trashRoutes from './routes/trashRoutes';
+import currencyRoutes from './routes/currencyRoutes';
 import appReleaseRoutes from './routes/appReleaseRoutes';
 import path from 'path';
 
@@ -436,6 +437,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/bulk', bulkRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/trash', trashRoutes);
+app.use('/api/currency', currencyRoutes);
 app.use('/api/app-releases', appReleaseRoutes);
 
 // Licensing & Multi-tenancy

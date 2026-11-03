@@ -100,6 +100,8 @@ export const createProduct = async (req: Request, res: Response) => {
                 sku: req.body.sku,
                 description: req.body.description,
                 basePrice: Number(req.body.basePrice),
+                // price is entered in this currency (may differ from the org currency) and stored as USD
+                currency: String(req.body.currency || (user as any).organisation?.currency || 'USD').toUpperCase(),
                 category: req.body.category,
                 tags: req.body.tags,
                 // Previously dropped on create even though the Add Product form

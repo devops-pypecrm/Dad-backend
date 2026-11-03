@@ -1,5 +1,7 @@
 import cron from 'node-cron';
 import { TrashService } from './trashService';
+import { fetchAndStoreLatestRates, todayStr } from './currencyService';
+import prismaMain from '../config/prisma';
 import { cronPrisma } from '../config/prisma';
 import { runShuffler } from './shuffler-module/shufflerService';
 import { runIssueRetentionCleanup } from './issueCleanupService';
@@ -277,6 +279,11 @@ export const initCronJobs = () => {
     });
 
     console.log('[Cron] Daily cleanup job scheduled.');
+
+    // Daily FX snapshot (00:10 UTC) + catch-up on boot, so every record can be priced at its own day's rate
+    const refreshRates = async () => { try { const n = await fetchAndStoreLatestRates(); console.log(`[Cron] FX rates stored: ${n}`); } catch (e: any) { console.error('[Cron] FX rate fetch failed:', e.message); } };
+    cron.schedule('10 0 * * *', refreshRates);
+    prismaMain.exchangeRate.count({ where: { date: todayStr() } }).then((c) => { if (!c) refreshRates(); }).catch(() => {});
 
     // Run every day at 02:00 AM (Trash Purge - 7 Days)
     cron.schedule('0 2 * * *', async () => {

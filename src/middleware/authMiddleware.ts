@@ -1,3 +1,4 @@
+import { setRequestCurrency } from '../utils/moneyConversion';
 import jwt, { JwtPayload } from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../config/prisma';
@@ -98,7 +99,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
                 sessionId
             };
 
-            // console.log(`[AuthMiddleware] Authenticated user: ${ user.email } `); 
+            setRequestCurrency((user as any).organisation?.currency); // money is shown/entered in the org's currency
             return next();
         } catch (error: any) {
             // Real token verification failures get 401 (forces logout)
@@ -150,6 +151,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
                         isSuperAdmin: checkSuperAdmin(user),
                         isBranchManager: !!branchManaged
                     };
+                    setRequestCurrency((user as any).organisation?.currency);
                     return next();
                 }
             }

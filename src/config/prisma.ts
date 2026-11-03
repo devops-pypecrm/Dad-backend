@@ -1,6 +1,8 @@
 // import { Pool, PoolConfig } from 'pg';
 // import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/client';
+import { registerMoneyMiddleware } from '../utils/moneyConversion';
+import { setCurrencyDb } from '../services/currencyService';
 
 const globalForPrisma = global as unknown as {
     prisma: PrismaClient;
@@ -10,6 +12,8 @@ const globalForPrisma = global as unknown as {
 // Main API Prisma client — uses connection_limit from DATABASE_URL
 if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = new PrismaClient();
+    registerMoneyMiddleware(globalForPrisma.prisma); // money stored in USD, shown in the org's currency
+    setCurrencyDb(globalForPrisma.prisma);
 }
 
 // Dedicated Cron Prisma client — limited to 3 connections so crons

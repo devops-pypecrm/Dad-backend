@@ -664,6 +664,7 @@ model LeadProduct {
   quantity   Int     @default(1)
   price      Float
   customName String?
+  createdAt  DateTime @default(now()) // pins the FX rate this row's price is shown with
   lead       Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
   product    Product @relation(fields: [productId], references: [id])
 
@@ -749,6 +750,7 @@ model QuoteLineItem {
   total        Float
   quoteId      String
   productId    String?
+  createdAt    DateTime @default(now()) // pins the FX rate this row's amounts are shown with
   product      Product? @relation(fields: [productId], references: [id])
   quote        Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
 }
@@ -2665,4 +2667,18 @@ model InstagramGateEvent {
 
   @@unique([botId, commentId])
   @@index([botId, igsid])
+}
+
+// Daily FX snapshot: `rate` = units of `currency` per 1 USD on `date` (YYYY-MM-DD). Money is stored in USD; a record
+// is displayed with the rate of the day it was created (see utils/moneyConversion.ts).
+model ExchangeRate {
+  id        String   @id @default(uuid())
+  date      String
+  currency  String
+  rate      Float
+  source    String   @default("api")
+  createdAt DateTime @default(now())
+
+  @@unique([date, currency])
+  @@index([currency, date])
 }
