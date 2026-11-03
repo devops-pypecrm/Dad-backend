@@ -166,7 +166,7 @@ export function registerMoneyMiddleware(prisma: any): void {
                 let day: Date | string | null = null;
                 if (['update', 'upsert'].includes(action) && params.args.where) {
                     // pin to the existing record's creation day so editing never drifts the stored USD value
-                    try { const ex = await rawCall(() => prisma[lower(model)].findUnique({ where: params.args.where, select: { createdAt: true } })); day = ex?.createdAt || null; } catch { day = null; }
+                    try { const ex: any = await rawCall<any>(() => prisma[lower(model)].findUnique({ where: params.args.where, select: { createdAt: true } })); day = ex?.createdAt || null; } catch { day = null; }
                 }
                 // clone first: controllers keep using their own input objects after the call
                 const args = { ...params.args };
