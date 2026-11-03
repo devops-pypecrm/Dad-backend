@@ -150,6 +150,15 @@ export const getLeadWhatsAppMessages = async (req: AuthRequest, res: Response) =
         const { leadId } = req.params;
         if (!leadId) return res.status(400).json({ message: 'Lead ID is required' });
 
+        // Pagination for the mobile "Show more" button — previously this endpoint
+        // silently hard-capped at 100 per source with no way to reach older
+        // messages/calls past that. Defaults match the old cap for any caller
+        // that doesn't pass these (e.g. web), so existing behavior is unchanged
+        // unless a client asks for more.
+        const limit = Math.min(parseInt(String(req.query.limit ?? '100'), 10) || 100, 500);
+        const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
+        const fetchCount = offset + limit;
+
         // Get the lead's phone number for matching
         const lead = await prisma.lead.findUnique({
             where: { id: leadId },
@@ -177,7 +186,7 @@ export const getLeadWhatsAppMessages = async (req: AuthRequest, res: Response) =
         const byLeadId = await prisma.whatsAppMessage.findMany({
             where: { organisationId: orgId, isDeleted: false, leadId },
             orderBy: { createdAt: 'desc' },
-            take: 100,
+            take: fetchCount,
             include: { agent: agentSelect }
         });
 
@@ -198,19 +207,19 @@ export const getLeadWhatsAppMessages = async (req: AuthRequest, res: Response) =
                     OR: [{ leadId: null, contactId: null }, { leadId }]
                 },
                 orderBy: { createdAt: 'desc' },
-                take: 100,
+                take: fetchCount,
                 include: { agent: agentSelect }
             })
             : [];
 
-        // Merge, deduplicate by id, re-sort, cap at 100
+        // Merge, deduplicate by id, re-sort, cap at the requested page end
         const seen = new Set<string>();
         const waMessages = [...byLeadId, ...byPhone]
             .filter(m => { if (seen.has(m.id)) return false; seen.add(m.id); return true; })
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-            .slice(0, 100);
+            .slice(0, fetchCount);
 
-        // 2. Fetch Interaction records with type='whatsapp' 
+        // 2. Fetch Interaction records with type='whatsapp'
         const waInteractions = await prisma.interaction.findMany({
             where: {
                 leadId,
@@ -218,7 +227,7 @@ export const getLeadWhatsAppMessages = async (req: AuthRequest, res: Response) =
                 isDeleted: false
             },
             orderBy: { date: 'desc' },
-            take: 100,
+            take: fetchCount,
             include: {
                 createdBy: { select: { id: true, firstName: true, lastName: true } }
             }
@@ -338,7 +347,12 @@ export const getLeadWhatsAppMessages = async (req: AuthRequest, res: Response) =
         // Sort by date descending strictly for final output
         sanitized.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-        res.json(sanitized);
+        // Apply the requested page. Response stays a plain array (Dad-frontend's
+        // Lead Detail page reads this same endpoint without limit/offset and
+        // expects an array) — the client infers "more might exist" by checking
+        // whether the page came back full (length === limit).
+        const page = sanitized.slice(offset, offset + limit);
+        res.json(page);
     } catch (error: any) {
         console.error('Error in getLeadWhatsAppMessages:', error);
         res.status(500).json({ message: error.message });
