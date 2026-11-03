@@ -249,6 +249,31 @@ export const getTimeline = async (req: Request, res: Response) => {
             }))
         ];
 
+        // A lead's timeline ends with when it was created (and from where). The generic
+        // "Create Lead" audit row, if any, is replaced by this entry to avoid a duplicate.
+        if (type === 'lead') {
+            const orgScope = (req as any).user?.organisationId;
+            const lead = await prisma.lead.findFirst({
+                where: { id, ...(orgScope ? { organisationId: orgScope } : {}) },
+                select: { id: true, createdAt: true, source: true, createdBy: { select: { id: true, firstName: true, lastName: true } } }
+            });
+            if (lead) {
+                for (let i = timeline.length - 1; i >= 0; i--) {
+                    if (timeline[i].type === 'audit' && /^create lead/i.test(String(timeline[i].title))) timeline.splice(i, 1);
+                }
+                timeline.push({
+                    id: `lead-created-${lead.id}`,
+                    type: 'audit',
+                    subType: 'LEAD_CREATED',
+                    title: 'Lead created',
+                    description: `Lead was created${lead.source ? ` via ${String(lead.source).replace(/_/g, ' ')}` : ''}`,
+                    date: lead.createdAt,
+                    actor: lead.createdBy || undefined,
+                    meta: {}
+                } as any);
+            }
+        }
+
         // Sort by date descending
         timeline.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
