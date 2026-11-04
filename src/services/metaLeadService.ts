@@ -16,6 +16,10 @@ interface QueuedLead {
     nextRetry: number;
 }
 
+// adId -> owning ad account id. An ad never changes accounts, so this is safe to keep for the
+// life of the process and saves a Graph call (and a failure point) per repeat lead.
+const adAccountCache = new Map<string, string>();
+
 let leadQueue: QueuedLead[] = [];
 let isProcessingQueue = false;
 
@@ -325,53 +329,83 @@ export const MetaLeadService = {
                 const globalEnabledAccounts = (orgIntegrations.meta?.enabledLeadSyncAccounts as string[]) || [];
                 const allEnabledAccounts = [...new Set([...enabledAccounts, ...globalEnabledAccounts])];
                 const mainAdAccountId = matchedAccount?.adAccountId ? String(matchedAccount.adAccountId) : null;
-                const hasAnyFilter = allEnabledAccounts.length > 0 || !!mainAdAccountId;
+                const normAct = (id: any) => { const s = String(id); return s.startsWith('act_') ? s : `act_${s}`; };
+                // Explicit BLOCK-list: ad accounts whose leads must never sync, even when the
+                // account would otherwise pass (or the allow-list is empty). Stored on the page's
+                // metaAccounts[] entry (survives an OAuth reconnect, which rebuilds `meta`) and/or
+                // on `meta`; both are merged.
+                const blockedAccounts = [...new Set([
+                    ...((matchedAccount?.blockedLeadSyncAccounts as string[]) || []),
+                    ...((orgIntegrations.meta?.blockedLeadSyncAccounts as string[]) || [])
+                ].map(normAct))];
+                const hasAllowFilter = allEnabledAccounts.length > 0 || !!mainAdAccountId;
+                const hasAnyFilter = hasAllowFilter || blockedAccounts.length > 0;
 
                 if (hasAnyFilter && matchedAccount?.accessToken) {
                     let resolvedAdAccountId = metaLeadData.ad_account_id || metaLeadData.ad?.account_id;
                     let lookupPermissionDenied = false;
+                    let lookupFailed = false;
                     const adIdForLookup = metaLeadData.ad_id || adId;
 
                     if (!resolvedAdAccountId && adIdForLookup) {
-                        try {
-                            const accessToken = decrypt(matchedAccount.accessToken);
-                            const adResponse = await axios.get(`https://graph.facebook.com/v18.0/${adIdForLookup}`, {
-                                params: { access_token: accessToken, fields: 'account_id' }
-                            });
-                            resolvedAdAccountId = adResponse.data.account_id;
-                        } catch (adErr: any) {
-                            const adErrMsg = adErr.response?.data?.error?.message || adErr.message;
-                            console.warn(`[MetaLeadService] Could not resolve ad_account_id for ad ${adIdForLookup}:`, adErrMsg);
-                            // A token that can manage its own connected ad account's leads should
-                            // always be able to read its own ad's account_id. A permission error here
-                            // specifically is the exact signature of an ad belonging to a *different*,
-                            // unconnected ad account (confirmed manually for the cross-account
-                            // "Edufolio July 22" / "MT May 12" leads) — so for a strictly-filtered org,
-                            // "unverifiable" must mean "foreign", not "let it through".
-                            if (adErr.response?.data?.error?.code === 100) {
-                                lookupPermissionDenied = true;
+                        // An ad's owning account never changes, so remember it: a later transient
+                        // Meta/API failure for the same ad can't then let a lead slip past the filter.
+                        const cached = adAccountCache.get(String(adIdForLookup));
+                        if (cached) {
+                            resolvedAdAccountId = cached;
+                        } else {
+                            for (let attempt = 1; attempt <= 3 && !resolvedAdAccountId; attempt++) {
+                                try {
+                                    const accessToken = decrypt(matchedAccount.accessToken);
+                                    const adResponse = await axios.get(`https://graph.facebook.com/v18.0/${adIdForLookup}`, {
+                                        params: { access_token: accessToken, fields: 'account_id' },
+                                        timeout: 10000
+                                    });
+                                    resolvedAdAccountId = adResponse.data.account_id;
+                                    if (resolvedAdAccountId) adAccountCache.set(String(adIdForLookup), String(resolvedAdAccountId));
+                                    lookupFailed = false;
+                                } catch (adErr: any) {
+                                    const adErrMsg = adErr.response?.data?.error?.message || adErr.message;
+                                    console.warn(`[MetaLeadService] Could not resolve ad_account_id for ad ${adIdForLookup} (attempt ${attempt}):`, adErrMsg);
+                                    // A token that can manage its own connected ad account's leads should
+                                    // always be able to read its own ad's account_id. A permission error here
+                                    // specifically is the exact signature of an ad belonging to a *different*,
+                                    // unconnected ad account (confirmed manually for the cross-account
+                                    // "Edufolio July 22" / "MT May 12" leads) — so for a strictly-filtered org,
+                                    // "unverifiable" must mean "foreign", not "let it through".
+                                    if (adErr.response?.data?.error?.code === 100) {
+                                        lookupPermissionDenied = true;
+                                        break; // definitive - retrying won't change a permission answer
+                                    }
+                                    lookupFailed = true;
+                                    if (attempt < 3) await new Promise(r => setTimeout(r, 800 * attempt));
+                                }
                             }
                         }
                     }
 
                     if (resolvedAdAccountId) {
-                        const strAdAccountId = String(resolvedAdAccountId);
-                        const normalizedLeadAdId = strAdAccountId.startsWith('act_') ? strAdAccountId : `act_${strAdAccountId}`;
+                        const normalizedLeadAdId = normAct(resolvedAdAccountId);
 
-                        const isWhitelisted = allEnabledAccounts.some((id: string) => {
-                            const strId = String(id);
-                            const normalizedId = strId.startsWith('act_') ? strId : `act_${strId}`;
-                            return normalizedId === normalizedLeadAdId;
-                        });
-                        const isMainMatch = mainAdAccountId && (
-                            (mainAdAccountId.startsWith('act_') ? mainAdAccountId : `act_${mainAdAccountId}`) === normalizedLeadAdId
-                        );
+                        if (blockedAccounts.includes(normalizedLeadAdId)) {
+                            console.warn(`[MetaLeadService] Blocking lead ${leadgenId} from blocked ad account ${normalizedLeadAdId} for Org ${orgId}.`);
+                            return;
+                        }
 
-                        if (!isWhitelisted && !isMainMatch) {
+                        const isWhitelisted = allEnabledAccounts.some((id: string) => normAct(id) === normalizedLeadAdId);
+                        const isMainMatch = mainAdAccountId && normAct(mainAdAccountId) === normalizedLeadAdId;
+
+                        if (hasAllowFilter && !isWhitelisted && !isMainMatch) {
                             console.warn(`[MetaLeadService] Blocking cross-account lead ${leadgenId} (AdAccount: ${normalizedLeadAdId}) for Org ${orgId}. MainAcc: ${mainAdAccountId}, Whitelist: [${allEnabledAccounts.join(',')}]`);
                             return;
                         }
-                    } else if (lookupPermissionDenied) {
+                    } else if (lookupFailed && blockedAccounts.length > 0) {
+                        // Block-list orgs: an unverifiable lead must NOT slip through on a transient
+                        // Meta error. Skip it unsaved - the 30-minute polling run re-fetches the last
+                        // 24h and will save it once the ad's account can be verified.
+                        console.warn(`[MetaLeadService] Deferring lead ${leadgenId} for Org ${orgId}: ad account could not be verified (Meta lookup failed) and this org has blocked ad accounts. Will be retried by polling.`);
+                        return;
+                    } else if (lookupPermissionDenied && hasAllowFilter) {
                         console.warn(`[MetaLeadService] Blocking lead ${leadgenId} for Org ${orgId}: ad account ownership could not be verified (permission denied) and this org has ad-account filtering configured.`);
                         return;
                     } else {
