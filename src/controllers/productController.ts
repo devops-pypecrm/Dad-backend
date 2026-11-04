@@ -405,7 +405,7 @@ export const getSharedProduct = async (req: Request, res: Response) => {
             include: {
                 product: true,
                 createdBy: { select: { firstName: true, lastName: true, id: true, email: true, phone: true } },
-                organisation: { select: { isDeleted: true, name: true } }
+                organisation: { select: { isDeleted: true, name: true, logo: true, contactEmail: true, contactPhone: true, address: true } }
             }
         });
 
@@ -549,7 +549,11 @@ export const getSharedProduct = async (req: Request, res: Response) => {
             product: share.product,
             seller: share.createdBy,
             organisation: {
-                name: share.organisation.name
+                name: share.organisation.name,
+                logo: share.organisation.logo,
+                contactEmail: share.organisation.contactEmail,
+                contactPhone: share.organisation.contactPhone,
+                address: share.organisation.address
             },
             shareConfig: {
                 youtubeUrl: share.youtubeUrl,
