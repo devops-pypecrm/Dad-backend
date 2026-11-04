@@ -1921,6 +1921,10 @@ export const convertLead = async (req: express.Request, res: express.Response) =
         if (stage === 'closed_won' && result.opportunity) {
             const oppId = result.opportunity.id;
 
+            import('../services/incentiveService').then(({ calculateIncentiveForOpportunity }) => {
+                calculateIncentiveForOpportunity(oppId, user.id).catch(error => console.error('Incentive calculation error:', error));
+            });
+
             try {
                 if (paymentType === 'paid') {
                     const PaymentService = (await import('../services/paymentService')).default;

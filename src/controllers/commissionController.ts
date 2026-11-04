@@ -3,10 +3,54 @@ import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { getOrgId } from '../utils/hierarchyUtils';
 import { normalizeRole } from '../utils/roleUtils';
+import { calculateHistoricalIncentives, DEFAULT_INCENTIVE_CONFIG, normalizeIncentiveConfig } from '../services/incentiveService';
+import { Prisma } from '../generated/client';
 
 const USER_SELECT = { id: true, firstName: true, lastName: true, email: true, profileImage: true };
 
 const isAdminRequester = (user: any) => user?.isSuperAdmin || normalizeRole(user?.role) === 'admin';
+
+export const getIncentiveConfig = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId((req as any).user);
+        if (!orgId) return res.status(400).json({ message: 'No org' });
+        const organisation = await prisma.organisation.findUnique({ where: { id: orgId }, select: { incentiveConfig: true } });
+        res.json(organisation?.incentiveConfig ? normalizeIncentiveConfig(organisation.incentiveConfig) : DEFAULT_INCENTIVE_CONFIG);
+    } catch (error) { res.status(500).json({ message: (error as Error).message }); }
+};
+
+export const updateIncentiveConfig = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId((req as any).user);
+        if (!orgId) return res.status(400).json({ message: 'No org' });
+        const config = normalizeIncentiveConfig(req.body);
+        if (config.value <= 0) return res.status(400).json({ message: 'Incentive value must be greater than zero' });
+        if (config.calculationType === 'percentage' && config.value > 100) return res.status(400).json({ message: 'Percentage cannot exceed 100' });
+        await prisma.organisation.update({ where: { id: orgId }, data: { incentiveConfig: config as any } });
+        res.json(config);
+    } catch (error) { res.status(400).json({ message: (error as Error).message }); }
+};
+
+export const deleteIncentiveConfig = async (req: Request, res: Response) => {
+    try {
+        const orgId = getOrgId((req as any).user);
+        if (!orgId) return res.status(400).json({ message: 'No org' });
+        await prisma.organisation.update({ where: { id: orgId }, data: { incentiveConfig: Prisma.DbNull } });
+        res.json({ message: 'Incentive rule deleted', config: DEFAULT_INCENTIVE_CONFIG });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+export const recalculateIncentives = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(400).json({ message: 'No org' });
+        const result = await calculateHistoricalIncentives(orgId, user.id);
+        res.json(result);
+    } catch (error) { res.status(500).json({ message: (error as Error).message }); }
+};
 
 export const getCommissions = async (req: Request, res: Response) => {
     try {
@@ -70,6 +114,7 @@ export const createCommission = async (req: Request, res: Response) => {
                 type: req.body.type,
                 description: req.body.description,
                 dealId: req.body.dealId || undefined,
+                source: 'manual',
                 date: req.body.date ? new Date(req.body.date) : new Date(),
                 organisationId: orgId,
                 createdById: user.id

@@ -292,6 +292,9 @@ export const createOpportunity = async (req: Request, res: Response) => {
 
         // Trigger Sales Target Update if created as closed_won
         if (opportunity.stage === 'closed_won' && opportunity.ownerId) {
+            import('../services/incentiveService').then(({ calculateIncentiveForOpportunity }) => {
+                calculateIncentiveForOpportunity(opportunity.id, user.id).catch(error => console.error('Incentive calculation error:', error));
+            });
             // New logic for payment and EMI
             const { paymentType, paidAmount, installments } = req.body;
             const oppId = opportunity.id;
@@ -603,6 +606,9 @@ export const updateOpportunity = async (req: Request, res: Response) => {
 
         // Trigger Sales Target Update when opportunity is closed won
         if ((req.body.stage === 'closed_won' || (opportunity.stage === 'closed_won' && req.body.amount)) && opportunity.ownerId) {
+            import('../services/incentiveService').then(({ calculateIncentiveForOpportunity }) => {
+                calculateIncentiveForOpportunity(opportunity.id, requester.id).catch(error => console.error('Incentive calculation error:', error));
+            });
             // Payment recording is AWAITED to ensure PaymentRecord rows are written before responding
             const { paymentType, paidAmount, installments } = req.body;
             const orgId = opportunity.organisationId;

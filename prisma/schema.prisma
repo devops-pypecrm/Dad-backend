@@ -28,6 +28,7 @@ model Organisation {
   apiKey                  String?
   integrations            Json?
   leadScoringConfig       Json?
+  incentiveConfig         Json? // { enabled, calculationType, value, minimumDealAmount, defaultStatus }
   dailyReportTime         String                   @default("09:00") // Time to send daily business report (HH:mm)
   dailyReportEmailEnabled Boolean                  @default(false)
   // Outstanding balance owed, computed from the org's active License.customPrice
@@ -1848,6 +1849,9 @@ model Commission {
   type           String
   description    String?
   dealId         String?
+  source         String   @default("manual") // manual | automatic
+  calculationBase Float?
+  calculationRate Float?
   date           DateTime @default(now())
   organisationId String
   createdById    String?
@@ -1861,6 +1865,7 @@ model Commission {
 
   @@index([organisationId])
   @@index([userId])
+  @@index([organisationId, dealId, source])
 }
 
 model LandingPage {

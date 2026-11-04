@@ -340,7 +340,7 @@ export const addAccountProduct = async (req: Request, res: Response) => {
         // 3. If it's a Final Sale (Upsell), create a closed_won Opportunity automatically
         if (isFinalSale === true) {
             const finalAmount = (Number(price) || 0) * (Number(quantity) || 1);
-            await prisma.opportunity.create({
+            const wonOpportunity = await prisma.opportunity.create({
                 data: {
                     name: `Upsell: ${customName || asset.product.name} (${asset.quantity})`,
                     amount: finalAmount,
@@ -353,6 +353,9 @@ export const addAccountProduct = async (req: Request, res: Response) => {
                     owner: { connect: { id: user.id } },
                     account: { connect: { id: accountId } }
                 }
+            });
+            import('../services/incentiveService').then(({ calculateIncentiveForOpportunity }) => {
+                calculateIncentiveForOpportunity(wonOpportunity.id, user.id).catch(error => console.error('Incentive calculation error:', error));
             });
             console.log(`[Upsell] Created closed_won opportunity for account ${accountId} (Amount: ${finalAmount})`);
         }
