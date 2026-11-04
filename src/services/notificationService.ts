@@ -52,22 +52,28 @@ export class NotificationService {
             // registered `fcmToken` is actually for.
             const pushUser = await prisma.user.findUnique({
                 where: { id: recipientId },
-                select: { fcmToken: true, notificationPreferences: true }
+                select: { fcmToken: true, notificationPreferences: true, devices: { select: { token: true } } }
             });
             const pushPrefs = pushUser?.notificationPreferences as any;
-            if (pushUser?.fcmToken && pushPrefs?.pushNotifications !== false) {
-                // Fire-and-forget: never let a push failure block or fail
-                // the notification the DB/socket/email paths already
-                // succeeded at. `sendPushNotification` itself never throws.
-                sendPushNotification(recipientId, pushUser.fcmToken, {
-                    title,
-                    body: message,
-                    data: {
-                        type,
-                        ...(related?.resource ? { relatedResource: related.resource } : {}),
-                        ...(related?.id ? { relatedId: related.id } : {})
-                    }
-                }).catch((err) => console.error('[NotificationService] Unexpected push error:', err));
+            if (pushUser && pushPrefs?.pushNotifications !== false) {
+                // Every phone the account is signed in on, plus the legacy single token if it
+                // isn't already one of them.
+                const tokens = new Set<string>(pushUser.devices.map((d) => d.token));
+                if (pushUser.fcmToken) tokens.add(pushUser.fcmToken);
+                for (const token of tokens) {
+                    // Fire-and-forget: never let a push failure block or fail the
+                    // notification the DB/socket/email paths already succeeded at.
+                    // `sendPushNotification` itself never throws.
+                    sendPushNotification(recipientId, token, {
+                        title,
+                        body: message,
+                        data: {
+                            type,
+                            ...(related?.resource ? { relatedResource: related.resource } : {}),
+                            ...(related?.id ? { relatedId: related.id } : {})
+                        }
+                    }).catch((err) => console.error('[NotificationService] Unexpected push error:', err));
+                }
             }
 
             // 4. Email Fallback

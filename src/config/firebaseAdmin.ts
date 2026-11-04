@@ -109,6 +109,7 @@ export async function sendPushNotification(
                     where: { id: userId, fcmToken },
                     data: { fcmToken: null, fcmTokenUpdatedAt: null }
                 });
+                await prisma.userDevice.deleteMany({ where: { token: fcmToken } });
             } catch (cleanupError) {
                 console.error('[firebaseAdmin] Failed to clear stale fcmToken:', cleanupError);
             }

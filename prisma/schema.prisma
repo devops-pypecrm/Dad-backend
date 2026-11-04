@@ -136,6 +136,7 @@ model User {
   notificationPreferences        Json?
   fcmToken                       String? // Mobile push (FCM) device token, overwritten on each login/registration
   fcmTokenUpdatedAt              DateTime?
+  devices                        UserDevice[]
   resetPasswordToken             String?
   resetPasswordExpire            DateTime?
   tokenVersion                   Int                      @default(0)
@@ -2711,4 +2712,22 @@ model BillingInvoice {
   @@index([organisationId])
   @@index([status])
   @@index([periodStart])
+}
+
+
+/// One row per physical phone/app install that registered for push. A user can be logged in
+/// on several devices at once, and every one of them should get their notifications —
+/// User.fcmToken alone could only hold the most recent device. `token` is unique: a given
+/// install belongs to exactly one account at a time (re-registering it under another user
+/// moves it).
+model UserDevice {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  platform   String?
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
 }

@@ -31,6 +31,15 @@ export const registerDeviceToken = async (req: Request, res: Response) => {
             data: { fcmToken: null, fcmTokenUpdatedAt: null }
         });
 
+        // A user can be signed in on several phones at once; each install is its own
+        // UserDevice row (token is unique, so re-registering it under a different account
+        // moves it there). User.fcmToken still mirrors the latest one for older readers.
+        await prisma.userDevice.upsert({
+            where: { token: fcmToken },
+            create: { userId: currentUser.id, token: fcmToken, platform: typeof req.body.platform === 'string' ? req.body.platform : null },
+            update: { userId: currentUser.id, lastSeenAt: new Date() }
+        });
+
         await prisma.user.update({
             where: { id: currentUser.id },
             data: { fcmToken, fcmTokenUpdatedAt: new Date() }
@@ -50,10 +59,22 @@ export const registerDeviceToken = async (req: Request, res: Response) => {
 export const clearDeviceToken = async (req: Request, res: Response) => {
     try {
         const currentUser = (req as any).user;
-        await prisma.user.update({
-            where: { id: currentUser.id },
-            data: { fcmToken: null, fcmTokenUpdatedAt: null }
-        });
+        const token: string | undefined = typeof req.body?.fcmToken === 'string' ? req.body.fcmToken : undefined;
+
+        // Sign out of THIS device only — the account's other phones keep receiving push.
+        // Older app builds don't send the token; for them fall back to the device that
+        // matches the mirrored User.fcmToken (their single registered phone).
+        const me = await prisma.user.findUnique({ where: { id: currentUser.id }, select: { fcmToken: true } });
+        const target = token || me?.fcmToken || undefined;
+        if (target) {
+            await prisma.userDevice.deleteMany({ where: { token: target, userId: currentUser.id } });
+        }
+        if (!token || token === me?.fcmToken) {
+            await prisma.user.update({
+                where: { id: currentUser.id },
+                data: { fcmToken: null, fcmTokenUpdatedAt: null }
+            });
+        }
         res.json({ message: 'Device token cleared' });
     } catch (error) {
         logger.error('clearDeviceToken Error', error, 'UserController');
