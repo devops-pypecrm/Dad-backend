@@ -55,7 +55,14 @@ router.post('/leads', verifyApiKey, async (req, res) => {
         // and the lead table's Campaign column can see it. Without this, leads posted here
         // (e.g. via a Zapier/Make bridge from Meta Ads) silently fall through every
         // campaign-based assignment rule with no way to tell why.
-        const resolvedCampaignName = campaignName || campaign_name || campaign || adName || ad_name || formName || form_name || "";
+        // The WordPress plugin sends the submitting website's address as `site`. Show that as the
+        // campaign (form titles like "Contact form 1" repeat across sites and can't tell them apart);
+        // the form title is kept in sourceDetails.formName.
+        const siteAddress = typeof req.body.site === 'string'
+            ? req.body.site.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '')
+            : '';
+        const resolvedFormName = formName || form_name || "";
+        const resolvedCampaignName = siteAddress || campaignName || campaign_name || campaign || adName || ad_name || formName || form_name || "";
 
         console.log(`[LeadAPI][${REQUEST_ID}] Step 2: Context - Org: ${orgId}, User: ${user?.id}`);
         console.log(`[LeadAPI][${REQUEST_ID}] FULL DATA TRACE: ${JSON.stringify(req.body)}`);
@@ -139,6 +146,8 @@ router.post('/leads', verifyApiKey, async (req, res) => {
                         message: resolvedMessage,
                         originalSource: originalSourceLabel,
                         campaignName: resolvedCampaignName || undefined,
+                        formName: resolvedFormName || undefined,
+                        siteUrl: siteAddress || undefined,
                         rawPayload: req.body
                     }
                 },
@@ -191,6 +200,8 @@ router.post('/leads', verifyApiKey, async (req, res) => {
                     message: resolvedMessage,
                     originalSource: originalSourceLabel,
                     campaignName: resolvedCampaignName || undefined,
+                    formName: resolvedFormName || undefined,
+                    siteUrl: siteAddress || undefined,
                     rawPayload: req.body
                 }
             }
