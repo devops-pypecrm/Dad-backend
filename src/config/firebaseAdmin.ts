@@ -109,7 +109,14 @@ export async function deliverPush(
                 token: fcmToken,
                 notification: { title: payload.title, body: payload.body },
                 data: payload.data,
-                android: { priority: 'high' }
+                android: {
+                    priority: 'high',
+                    // Keep undelivered pushes for a day (reminders are useless after that)
+                    // and always target the app's own high-importance channel, so a phone
+                    // never falls back to Firebase's silent default channel.
+                    ttl: 24 * 60 * 60 * 1000,
+                    notification: { channelId: 'pypecrm_default', defaultSound: true, visibility: 'public' }
+                }
             },
             opts.dryRun === true
         );
