@@ -3,6 +3,7 @@ import prisma from '../config/prisma';
 import { getSubordinateIds, getOrgId, getVisibleUserIds } from '../utils/hierarchyUtils';
 import { Prisma } from '../generated/client';
 import { logAudit } from '../utils/auditLogger';
+import { NotificationService } from '../services/notificationService';
 
 export const getCases = async (req: Request, res: Response) => {
     try {
@@ -146,6 +147,7 @@ export const createCase = async (req: Request, res: Response) => {
                     organisationId: orgId
                 }
             });
+            NotificationService.pushToUser(assignedToId, 'New Support Case Assigned', `${currentUser?.firstName} ${currentUser?.lastName} created a new support case: ${newCase.subject}`, 'info', { resource: 'case', id: newCase.id }).catch(() => {});
         }
 
         // Notify all managers up the hierarchy chain
@@ -174,6 +176,9 @@ export const createCase = async (req: Request, res: Response) => {
                     organisationId: orgId
                 }))
             });
+            for (const managerId of managersToNotify) {
+                NotificationService.pushToUser(managerId, 'New Support Case Created', `${currentUser?.firstName} ${currentUser?.lastName} created a support case: ${newCase.subject} (Priority: ${newCase.priority})`, 'info', { resource: 'case', id: newCase.id }).catch(() => {});
+            }
         }
 
         await logAudit({
@@ -293,6 +298,7 @@ export const updateCase = async (req: Request, res: Response) => {
                     organisationId: orgId
                 }
             });
+            NotificationService.pushToUser(updates.assignedToId, 'Support Case Assigned to You', `A support case has been assigned to you: ${oldCase?.subject}`, 'info', { resource: 'case', id: supportCase.id }).catch(() => {});
         }
 
         // Send notification if status changed to resolved
@@ -315,6 +321,7 @@ export const updateCase = async (req: Request, res: Response) => {
                         organisationId: orgId
                     }
                 });
+                NotificationService.pushToUser(caseWithCreator.createdById, 'Support Case Resolved', `Your support case has been resolved: ${oldCase?.subject}`, 'success', { resource: 'case', id: supportCase.id }).catch(() => {});
             }
         }
 

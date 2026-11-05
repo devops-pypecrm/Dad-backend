@@ -51,7 +51,32 @@ import {
     deleteEnquiry
 } from '../controllers/enquiryController';
 
+import {
+    getAuditOrganisations,
+    lookupAuditUsers,
+    getAuditSummary,
+    getAuditUsers,
+    getAuditUserDetail,
+    getAuditNotifications,
+    getAuditLogs,
+    getAuditDevices,
+    deleteAuditDevice,
+    testUserPush
+} from '../controllers/notificationAuditController';
+
 const router = express.Router();
+
+// Notification Audit (push delivery monitoring) - super admin only, enforced in the controller
+router.get('/notification-audit/organisations', protect, getAuditOrganisations);
+router.get('/notification-audit/users-lookup', protect, lookupAuditUsers);
+router.get('/notification-audit/summary', protect, getAuditSummary);
+router.get('/notification-audit/users', protect, getAuditUsers);
+router.get('/notification-audit/users/:id', protect, getAuditUserDetail);
+router.post('/notification-audit/users/:id/test-push', protect, testUserPush);
+router.get('/notification-audit/notifications', protect, getAuditNotifications);
+router.get('/notification-audit/logs', protect, getAuditLogs);
+router.get('/notification-audit/devices', protect, getAuditDevices);
+router.delete('/notification-audit/devices/:id', protect, deleteAuditDevice);
 
 // Full Platform Data Export/Restore
 router.get('/platform/export', protect, exportPlatformData);

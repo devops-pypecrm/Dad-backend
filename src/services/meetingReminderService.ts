@@ -1,4 +1,5 @@
 import prisma from '../config/prisma';
+import { NotificationService } from './notificationService';
 
 /**
  * Checks for meetings scheduled within the next 24 hours
@@ -95,6 +96,7 @@ export const generateMeetingReminders = async () => {
                         recipientId: userId
                     }
                 });
+                NotificationService.pushToUser(userId, 'Upcoming Meeting Tomorrow', `Meeting with ${leadName}: "${meeting.title}" scheduled for ${new Date(meeting.startTime).toLocaleString()}`, 'reminder', { resource: 'CalendarEvent', id: meeting.id }).catch(() => {});
                 console.log(`[MeetingReminder] Created notification for user ${userId} for meeting ${meeting.id}`);
             }
         }

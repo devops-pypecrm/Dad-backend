@@ -2736,3 +2736,38 @@ model UserDevice {
 
   @@index([userId])
 }
+
+/// One row per push-delivery ATTEMPT (or deliberate skip) made by NotificationService / the
+/// Super Admin "Test push" tool. Powers the Notification Audit panel: lets us see, per user and
+/// per organisation, whether FCM accepted a push, why it failed (error code) or why none was
+/// attempted at all (no registered device, push disabled by the user, FCM not configured).
+/// userId/organisationId are deliberately plain strings (no FK) so log history survives user
+/// deletion; the audit API joins names in application code. Pruned by the nightly retention job.
+model PushDeliveryLog {
+  id             String   @id @default(uuid())
+  createdAt      DateTime @default(now())
+  userId         String
+  organisationId String?
+  notificationId String?
+  title          String
+  type           String   @default("info")
+  /// "notification" (normal event) | "test" (Super Admin test push) | "validate" (dry-run)
+  source         String   @default("notification")
+  /// Only the last 10 chars of the FCM token - enough to match a device row, not enough to use.
+  tokenSuffix    String?
+  platform       String?
+  /// "sent" (FCM accepted) | "failed" | "skipped" (no attempt made - see errorCode)
+  status         String
+  /// FCM error code (e.g. messaging/registration-token-not-registered) or skip reason
+  /// (no_device | push_disabled | fcm_not_configured).
+  errorCode      String?
+  errorMessage   String?
+  /// FCM message id returned on success.
+  messageId      String?
+  latencyMs      Int?
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([organisationId, createdAt])
+  @@index([status, createdAt])
+}

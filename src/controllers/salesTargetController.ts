@@ -3,6 +3,7 @@ import prisma from '../config/prisma';
 import { getOrgId } from '../utils/hierarchyUtils';
 import { logAudit } from '../utils/auditLogger';
 import { SalesTargetService } from '../services/salesTargetService';
+import { NotificationService } from '../services/notificationService';
 
 // Helper: Get direct reports of a user
 const getDirectReports = async (userId: string): Promise<any[]> => {
@@ -193,6 +194,7 @@ export const assignTarget = async (req: Request, res: Response) => {
                                 relatedId: childTarget.id
                             }
                         });
+                        NotificationService.pushToUser(member.id, 'New Team Sales Target Assigned', `Your team "${team.name}" has been assigned a ${metric} target${opportunityType ? ` (${opportunityType})` : ''}. Your individual share is ${memberValue.toLocaleString()}`, 'info', { resource: 'SalesTarget', id: childTarget.id }).catch(() => {});
                     }
                 }
             }
@@ -311,6 +313,7 @@ export const assignTarget = async (req: Request, res: Response) => {
                     relatedId: mainTarget.id
                 }
             });
+            NotificationService.pushToUser(assignToUserId, 'New Sales Target Assigned', `You have been assigned a ${period} sales target of ${targetValue.toLocaleString()}${opportunityType ? ` for ${opportunityType}` : ''}`, 'info', { resource: 'SalesTarget', id: mainTarget.id }).catch(() => {});
         }
 
         await logAudit({
@@ -403,6 +406,7 @@ const distributeToSubordinates = async (
             relatedId: myTarget.id
         }
     });
+    NotificationService.pushToUser(userId, 'New Sales Target Assigned', `You have been assigned a ${period} sales target of ${targetValue.toLocaleString()}`, 'info', { resource: 'SalesTarget', id: myTarget.id }).catch(() => {});
 
     if (hasReports) {
         // Distribute strictly to children

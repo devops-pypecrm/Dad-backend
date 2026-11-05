@@ -1,6 +1,7 @@
 
 import prisma from '../config/prisma';
 import { sendPushNotification } from '../config/firebaseAdmin';
+import { recordPushLogs, type PushLogEntry } from './pushAuditService';
 import { getIO } from '../socket';
 import { EmailService } from './emailService';
 import { WhatsAppService } from './whatsAppService';
@@ -48,33 +49,10 @@ export class NotificationService {
             // high_priority/alert/reminder like the email/WhatsApp fallback
             // below: a push is the mobile equivalent of the in-app bell,
             // not an escalation channel, so it should fire whenever a
-            // Notification row is created, matching what the mobile app's
-            // registered `fcmToken` is actually for.
-            const pushUser = await prisma.user.findUnique({
-                where: { id: recipientId },
-                select: { fcmToken: true, notificationPreferences: true, devices: { select: { token: true } } }
-            });
-            const pushPrefs = pushUser?.notificationPreferences as any;
-            if (pushUser && pushPrefs?.pushNotifications !== false) {
-                // Every phone the account is signed in on, plus the legacy single token if it
-                // isn't already one of them.
-                const tokens = new Set<string>(pushUser.devices.map((d) => d.token));
-                if (pushUser.fcmToken) tokens.add(pushUser.fcmToken);
-                for (const token of tokens) {
-                    // Fire-and-forget: never let a push failure block or fail the
-                    // notification the DB/socket/email paths already succeeded at.
-                    // `sendPushNotification` itself never throws.
-                    sendPushNotification(recipientId, token, {
-                        title,
-                        body: message,
-                        data: {
-                            type,
-                            ...(related?.resource ? { relatedResource: related.resource } : {}),
-                            ...(related?.id ? { relatedId: related.id } : {})
-                        }
-                    }).catch((err) => console.error('[NotificationService] Unexpected push error:', err));
-                }
-            }
+            // Notification row is created. Fire-and-forget: a push failure must
+            // never block or fail the DB/socket/email paths that already succeeded.
+            this.pushToUser(recipientId, title, message, type, related, notification.id)
+                .catch((err) => console.error('[NotificationService] Unexpected push error:', err));
 
             // 4. Email Fallback
             if (type === 'high_priority' || type === 'alert' || type === 'reminder') {
@@ -119,6 +97,80 @@ export class NotificationService {
         } catch (error) {
             console.error('[NotificationService] Error sending notification:', error);
             throw error;
+        }
+    }
+
+
+    /**
+     * Push-only delivery to every device a user is signed in on, with each outcome (sent /
+     * failed / skipped-and-why) written to PushDeliveryLog for the Notification Audit panel.
+     * Used by `send()` and by modules that write Notification rows directly but still want the
+     * phone to ring. Never throws.
+     */
+    static async pushToUser(
+        recipientId: string,
+        title: string,
+        message: string,
+        type: string = 'info',
+        related?: { resource: string; id?: string },
+        notificationId?: string
+    ): Promise<void> {
+        try {
+            const user = await prisma.user.findUnique({
+                where: { id: recipientId },
+                select: {
+                    organisationId: true,
+                    fcmToken: true,
+                    notificationPreferences: true,
+                    devices: { select: { token: true, platform: true } }
+                }
+            });
+            if (!user) return;
+
+            const base = { userId: recipientId, organisationId: user.organisationId, notificationId, title, type };
+            const prefs = user.notificationPreferences as any;
+
+            if (prefs?.pushNotifications === false) {
+                await recordPushLogs([{ ...base, status: 'skipped', errorCode: 'push_disabled' }]);
+                return;
+            }
+
+            // Every phone the account is signed in on, plus the legacy single token if it
+            // isn't already one of them.
+            const tokens = new Map<string, string | null>(user.devices.map((d) => [d.token, d.platform] as [string, string | null]));
+            if (user.fcmToken && !tokens.has(user.fcmToken)) tokens.set(user.fcmToken, null);
+
+            if (tokens.size === 0) {
+                await recordPushLogs([{ ...base, status: 'skipped', errorCode: 'no_device' }]);
+                return;
+            }
+
+            const entries: PushLogEntry[] = await Promise.all(
+                Array.from(tokens.entries()).map(async ([token, platform]): Promise<PushLogEntry> => {
+                    const result = await sendPushNotification(recipientId, token, {
+                        title,
+                        body: message,
+                        data: {
+                            type,
+                            ...(related?.resource ? { relatedResource: related.resource } : {}),
+                            ...(related?.id ? { relatedId: related.id } : {})
+                        }
+                    });
+                    return {
+                        ...base,
+                        token,
+                        platform,
+                        status: result.ok ? 'sent' : 'failed',
+                        errorCode: result.errorCode,
+                        errorMessage: result.errorMessage,
+                        messageId: result.messageId,
+                        latencyMs: result.latencyMs
+                    };
+                })
+            );
+            await recordPushLogs(entries);
+        } catch (error) {
+            console.error('[NotificationService] pushToUser error:', error);
         }
     }
 

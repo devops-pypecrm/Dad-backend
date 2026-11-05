@@ -267,6 +267,14 @@ export const initCronJobs = () => {
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
 
+            // 3. Push delivery log retention (Notification Audit panel) - keep 30 days
+            const thirtyDaysAgo = new Date(now);
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            const prunedPushLogs = await cronPrisma.pushDeliveryLog.deleteMany({ where: { createdAt: { lt: thirtyDaysAgo } } });
+            if (prunedPushLogs.count > 0) {
+                console.log(`[Cron] Pruned ${prunedPushLogs.count} old push delivery logs.`);
+            }
+
         } catch (error) {
             console.error('[Cron] Error during daily cleanup:', error);
         }

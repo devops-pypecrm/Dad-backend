@@ -66,44 +66,84 @@ export interface PushPayload {
     data?: Record<string, string>;
 }
 
+export interface PushResult {
+    ok: boolean;
+    /** FCM error code, or `fcm_not_configured` when Firebase credentials are missing. */
+    errorCode?: string;
+    errorMessage?: string;
+    /** FCM message id on success. */
+    messageId?: string;
+    latencyMs: number;
+    /** True when FCM says the token itself is dead (uninstalled app / stale token). */
+    invalidToken?: boolean;
+}
+
+/** Whether Firebase credentials are present and initialised (used by the audit panel). */
+export function isPushConfigured(): boolean {
+    return getApp() !== null;
+}
+
+const INVALID_TOKEN_CODES = new Set([
+    'messaging/invalid-registration-token',
+    'messaging/registration-token-not-registered'
+]);
+
 /**
- * Sends one push notification. Returns `true` on success, `false` on any
- * failure (unconfigured, invalid/expired token, network error) — callers
- * must never let this throw into their own flow, since a push failure must
- * not roll back or interrupt the DB write / socket emit / email that
+ * Low-level send: one FCM message to one token, never throws, no side effects on the DB.
+ * `dryRun` asks FCM to validate the message and token without delivering anything.
+ */
+export async function deliverPush(
+    fcmToken: string,
+    payload: PushPayload,
+    opts: { dryRun?: boolean } = {}
+): Promise<PushResult> {
+    const started = Date.now();
+    const firebaseApp = getApp();
+    if (!firebaseApp) {
+        return { ok: false, errorCode: 'fcm_not_configured', errorMessage: 'FIREBASE_SERVICE_ACCOUNT_JSON is not set or invalid', latencyMs: 0 };
+    }
+
+    try {
+        const messageId = await getMessaging(firebaseApp).send(
+            {
+                token: fcmToken,
+                notification: { title: payload.title, body: payload.body },
+                data: payload.data,
+                android: { priority: 'high' }
+            },
+            opts.dryRun === true
+        );
+        return { ok: true, messageId, latencyMs: Date.now() - started };
+    } catch (error: any) {
+        const code = (error?.code as string | undefined) || 'unknown';
+        return {
+            ok: false,
+            errorCode: code,
+            errorMessage: String(error?.message || error).slice(0, 500),
+            latencyMs: Date.now() - started,
+            invalidToken: INVALID_TOKEN_CODES.has(code)
+        };
+    }
+}
+
+/**
+ * Sends one push notification and returns the detailed outcome. Never throws - callers must
+ * never let a push failure roll back or interrupt the DB write / socket emit / email that
  * already succeeded.
  *
- * When FCM reports the token itself is invalid (unregistered/not-found —
- * the normal outcome of an uninstalled app or a stale token), the stale
- * `User.fcmToken` is cleared so this doesn't keep failing silently forever
- * on every future notification to that user.
+ * When FCM reports the token itself is invalid (unregistered/not-found - the normal outcome of
+ * an uninstalled app or a stale token), the stale token is removed from `User.fcmToken` and
+ * `UserDevice` so this doesn't keep failing silently on every future notification.
  */
 export async function sendPushNotification(
     userId: string,
     fcmToken: string,
     payload: PushPayload
-): Promise<boolean> {
-    const firebaseApp = getApp();
-    if (!firebaseApp) return false;
+): Promise<PushResult> {
+    const result = await deliverPush(fcmToken, payload);
 
-    try {
-        await getMessaging(firebaseApp).send({
-            token: fcmToken,
-            notification: {
-                title: payload.title,
-                body: payload.body
-            },
-            data: payload.data,
-            android: { priority: 'high' }
-        });
-        return true;
-    } catch (error: any) {
-        const code = error?.code as string | undefined;
-        const isInvalidToken =
-            code === 'messaging/invalid-registration-token' ||
-            code === 'messaging/registration-token-not-registered';
-
-        if (isInvalidToken) {
+    if (!result.ok) {
+        if (result.invalidToken) {
             try {
                 await prisma.user.updateMany({
                     where: { id: userId, fcmToken },
@@ -114,8 +154,8 @@ export async function sendPushNotification(
                 console.error('[firebaseAdmin] Failed to clear stale fcmToken:', cleanupError);
             }
         } else {
-            console.error(`[firebaseAdmin] Push send failed for user ${userId}:`, error);
+            console.error(`[firebaseAdmin] Push send failed for user ${userId}: ${result.errorCode} ${result.errorMessage}`);
         }
-        return false;
     }
+    return result;
 }
