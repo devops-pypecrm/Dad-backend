@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { sanitizePageConfig } from '../utils/productPageConfig';
 import prisma from '../config/prisma';
 import { getOrgId } from '../utils/hierarchyUtils';
 import { Prisma } from '../generated/client';
@@ -110,6 +111,7 @@ export const createProduct = async (req: Request, res: Response) => {
                 isActive: req.body.isActive !== undefined ? Boolean(req.body.isActive) : undefined,
                 isCustom: req.body.isCustom !== undefined ? Boolean(req.body.isCustom) : undefined,
                 brochureUrl: req.body.brochureUrl,
+                pageConfig: req.body.pageConfig !== undefined ? (sanitizePageConfig(req.body.pageConfig) as any) : undefined,
                 // Also previously dropped on create (unlike updateProduct, which
                 // passes req.body straight through) - every new product silently
                 // landed on the schema defaults ("unit", 0% tax) no matter what
@@ -200,6 +202,10 @@ export const updateProduct = async (req: Request, res: Response) => {
                     return res.status(400).json({ message: 'Selected branch not found in this organisation' });
                 }
             }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(req.body, 'pageConfig')) {
+            req.body.pageConfig = sanitizePageConfig(req.body.pageConfig);
         }
 
         // Update the product

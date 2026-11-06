@@ -640,6 +640,9 @@ model Product {
   isCustom        Boolean          @default(false)
   isOrgProduct    Boolean          @default(false)
   brochureUrl     String?
+  // Content/layout of the public shared-product page (gallery, highlights, key details,
+  // sections, FAQs, CTA, accent colour). See utils/productPageConfig.ts for the shape.
+  pageConfig      Json?
   validFrom       DateTime?
   validUntil      DateTime?
   isDeleted       Boolean          @default(false)
