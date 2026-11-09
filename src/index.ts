@@ -57,6 +57,7 @@ import superAdminRoutes from './routes/superAdminRoutes';
 import salesTargetRoutes from './routes/salesTargetRoutes';
 import trainingRoutes from './routes/trainingRoutes';
 import callRoutes from './routes/callRoutes';
+import bonvoiceRoutes from './routes/bonvoiceRoutes';
 import callSettingsRoutes from './routes/callSettingsRoutes';
 import whatsappPersonalTemplateRoutes from './routes/whatsappPersonalTemplateRoutes';
 import backupRoutes from './routes/backupRoutes';
@@ -376,6 +377,7 @@ app.use('/api/interactions', interactionRoutes);
 import telephonyRoutes from './routes/telephonyRoutes';
 app.use('/api/calls', callRoutes);
 app.use('/api/call-settings', callSettingsRoutes);
+app.use('/api/integrations/bonvoice', bonvoiceRoutes);
 app.use('/api/whatsapp-templates', whatsappPersonalTemplateRoutes);
 app.use('/api/telephony', telephonyRoutes);
 

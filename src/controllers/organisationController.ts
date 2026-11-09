@@ -218,6 +218,10 @@ export const getOrganisation = async (req: Request, res: Response) => {
                     integrations.gallabox.apiKey = '[HIDDEN]';
                     integrations.gallabox.apiSecret = '[HIDDEN]';
                 }
+                if (integrations.bonvoice) {
+                    integrations.bonvoice.apiKey = '[HIDDEN]';
+                    integrations.bonvoice.webhookSecret = '[HIDDEN]';
+                }
                 sanitizedOrg.integrations = integrations;
             }
         }
