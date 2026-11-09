@@ -479,11 +479,15 @@ export const createLead = async (req: express.Request, res: express.Response) =>
             console.error('Audit Log Error:', e);
         }
 
-        // Enable Distribution only if no explicit assignment was made
-        // This allows assignment rules to work for automated leads, but respects manual assignments
-        if (!assignedTo) {
+        // Enable Distribution only if no explicit assignment was made, AND the
+        // lead didn't come from a manual creation — a manually-created lead
+        // with no explicit assignee should stay with its creator, not get
+        // swept into round-robin the way an inbound website/Meta/import lead
+        // should. Round-robin AssignmentRules still apply to every other
+        // source exactly as before.
+        if (!assignedTo && lead.source !== LeadSource.manual) {
             await DistributionService.assignLead(lead, orgId);
-        } else if (assignedTo !== currentUser.id) {
+        } else if (assignedTo && assignedTo !== currentUser.id) {
             // Manual assignment at creation time (e.g. an admin creating a
             // lead and handing it straight to a rep) previously never
             // notified the assignee at all — only reassignment via
