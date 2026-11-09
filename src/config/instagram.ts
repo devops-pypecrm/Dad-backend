@@ -5,7 +5,13 @@ export const IG_OAUTH_AUTHORIZE = 'https://www.instagram.com/oauth/authorize';
 export const IG_OAUTH_TOKEN = 'https://api.instagram.com/oauth/access_token';
 
 // Least privilege: only what the module uses (basic profile + DMs + comment replies).
-export const IG_SCOPES = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
+const BASE_SCOPES = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
+// Growth Tools (insights + content publishing) need two more permissions. They are only requested when
+// INSTAGRAM_EXTENDED_SCOPES=true, so the connect flow keeps working until those permissions are approved in the Meta app.
+export const IG_EXTENDED_SCOPES = ['instagram_business_manage_insights', 'instagram_business_content_publish'];
+export const igExtendedEnabled = () => process.env.INSTAGRAM_EXTENDED_SCOPES === 'true';
+export const igScopes = () => (igExtendedEnabled() ? [...BASE_SCOPES, ...IG_EXTENDED_SCOPES] : BASE_SCOPES);
+export const IG_SCOPES = BASE_SCOPES;
 
 // Instagram's messaging window: free-form replies are allowed for 24h after the person's last message.
 export const IG_WINDOW_MS = 24 * 60 * 60 * 1000;

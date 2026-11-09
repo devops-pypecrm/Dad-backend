@@ -2774,3 +2774,46 @@ model PushDeliveryLog {
   @@index([organisationId, createdAt])
   @@index([status, createdAt])
 }
+
+// ===================== WhatsApp & Instagram "Growth Tools" module (additive) =====================
+
+/// Click-to-WhatsApp ad / post referral captured from an inbound WhatsApp message (webhook "referral" object).
+model WhatsAppAdReferral {
+  id             String   @id @default(uuid())
+  organisationId String
+  phone          String
+  leadId         String?
+  sourceType     String? // ad | post
+  sourceId       String?
+  sourceUrl      String?
+  headline       String?
+  body           String?
+  mediaType      String?
+  ctwaClid       String?
+  createdAt      DateTime @default(now())
+
+  @@index([organisationId, createdAt])
+  @@index([organisationId, sourceId])
+}
+
+/// A post / reel / story queued to be published to Instagram at a set time (Instagram content publishing API).
+model InstagramScheduledPost {
+  id             String    @id @default(uuid())
+  organisationId String
+  accountId      String
+  mediaType      String // IMAGE | REELS | STORIES
+  mediaUrl       String // public URL Meta can fetch
+  caption        String?
+  scheduledFor   DateTime
+  status         String    @default("scheduled") // scheduled | publishing | published | failed | cancelled
+  creationId     String?
+  igMediaId      String?
+  permalink      String?
+  error          String?
+  createdById    String?
+  publishedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([organisationId, status, scheduledFor])
+}

@@ -30,17 +30,20 @@ export async function resolveWhatsAppCredentials(
     }
     if (!account) {
         account = await prisma.whatsAppAccount.findFirst({
-            where: { organisationId, isDeleted: false, status: 'active', provider: 'meta', accessToken: { not: null }, phoneNumberId: { not: null } },
+            where: {
+                organisationId, isDeleted: false, status: 'active', accessToken: { not: null },
+                OR: [{ provider: 'meta', phoneNumberId: { not: null } }, { provider: 'happilee' }]
+            },
             orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }]
         });
     }
 
-    if (account?.accessToken && account.phoneNumberId) {
+    if (account?.accessToken && (account.phoneNumberId || account.provider === 'happilee')) {
         try {
             return {
                 accountId: account.id,
                 provider: account.provider,
-                phoneNumberId: account.phoneNumberId,
+                phoneNumberId: account.phoneNumberId || '', // Happilee is keyed by API key only
                 wabaId: account.wabaId || undefined,
                 accessToken: decrypt(account.accessToken),
                 displayPhoneNumber: account.phoneNumber

@@ -7,6 +7,7 @@ import { WhatsAppTemplateService } from './whatsAppTemplateService';
 import { digitsOnly, isValidWhatsAppNumber } from '../utils/whatsappPhone';
 import { isWhatsAppEnabled, WHATSAPP_NOT_ENABLED_MESSAGE } from './whatsAppFeature';
 import { emitToOrg } from '../socket';
+import { HappileeService } from './happileeService';
 
 export type SendSource = 'agent' | 'flow' | 'ai' | 'auto_responder' | 'nurture' | 'campaign' | 'workflow';
 
@@ -78,6 +79,11 @@ export const WhatsAppSender = {
             renderedText = await WhatsAppTemplateService.renderText(p.organisationId, p.template.name, p.template.language, p.template.values || []);
         }
 
+        const isHappilee = cred.provider === 'happilee';
+        if (isHappilee && !p.template) {
+            throw new WhatsAppSendError('API_ERROR', 'Happilee numbers can only send approved templates from the CRM. Pick a template.');
+        }
+
         const svc = new WhatsAppService({ accessToken: cred.accessToken, phoneNumberId: cred.phoneNumberId, wabaId: cred.wabaId });
         const messageType = p.template ? 'template' : p.media ? p.media.type : p.interactive ? 'interactive' : 'text';
         const content: any = p.template
@@ -109,7 +115,9 @@ export const WhatsAppSender = {
         };
 
         try {
-            const result = p.template
+            const result = isHappilee
+                ? await new HappileeService(cred.accessToken).sendTemplate(phone, p.template!.name, p.template!.values || [])
+                : p.template
                 ? await svc.sendTemplateMessage(phone, p.template.name, p.template.language, components)
                 : p.media
                     ? await svc.sendMediaMessage(phone, p.media.type, p.media.mediaId, p.media.caption, p.media.filename)

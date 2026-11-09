@@ -76,7 +76,10 @@ export const InstagramWebhookService = {
         if (ev.postback) {
             const igsid = String(ev.sender?.id);
             if (igsid === self) return;
-            await InstagramBotEngine.handleGateResponse({ account, igsid, payload: String(ev.postback.payload || '') });
+            const payload = String(ev.postback.payload || '');
+            // Ice breaker / persistent-menu taps (Growth Tools) carry "IB:<question>"; treat them like the person typing that text.
+            if (payload.startsWith('IB:')) { await InstagramBotEngine.handleDirectMessage({ account, igsid, text: payload.slice(3) }); return; }
+            await InstagramBotEngine.handleGateResponse({ account, igsid, payload });
             return;
         }
 

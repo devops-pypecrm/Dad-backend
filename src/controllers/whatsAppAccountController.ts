@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import { getOrgId } from '../utils/hierarchyUtils';
 import { encrypt } from '../utils/encryption';
+import { HappileeService } from '../services/happileeService';
 
 // Keeps organisation.integrations.whatsappAccounts (the JSON array the existing
 // webhook router in whatsAppIntegrationService.ts already reads) in sync with the
@@ -81,11 +82,20 @@ export const createWhatsAppAccount = async (req: Request, res: Response) => {
         const { phoneNumber, displayName, provider, phoneNumberId, wabaId, accessToken, status, isDefault } = req.body;
         if (!phoneNumber) return res.status(400).json({ message: 'phoneNumber is required' });
         // Only the official WhatsApp Cloud API (Meta) and the Gallabox BSP are supported.
-        if (provider && !['meta', 'gallabox'].includes(provider)) {
-            return res.status(400).json({ message: 'Unsupported provider. Use the official WhatsApp Cloud API (Meta) or Gallabox.' });
+        if (provider && !['meta', 'gallabox', 'happilee'].includes(provider)) {
+            return res.status(400).json({ message: 'Unsupported provider. Use the official WhatsApp Cloud API (Meta), Gallabox or Happilee.' });
         }
         if ((provider || 'meta') === 'meta' && (!phoneNumberId || !wabaId || !accessToken)) {
             return res.status(400).json({ message: 'Phone number ID, WhatsApp Business Account ID and access token are required for the WhatsApp Cloud API.' });
+        }
+
+        if (provider === 'happilee') {
+            if (!accessToken) return res.status(400).json({ message: 'Happilee API key is required.' });
+            try {
+                await new HappileeService(accessToken).validate();
+            } catch (e) {
+                return res.status(400).json({ message: (e as Error).message });
+            }
         }
 
         const existing = await prisma.whatsAppAccount.findFirst({
@@ -150,8 +160,16 @@ export const updateWhatsAppAccount = async (req: Request, res: Response) => {
         if (!existing) return res.status(404).json({ message: 'WhatsApp account not found' });
 
         const { phoneNumber, displayName, provider, phoneNumberId, wabaId, accessToken, status, isDefault } = req.body;
-        if (provider && !['meta', 'gallabox'].includes(provider)) {
-            return res.status(400).json({ message: 'Unsupported provider. Use the official WhatsApp Cloud API (Meta) or Gallabox.' });
+        if (provider && !['meta', 'gallabox', 'happilee'].includes(provider)) {
+            return res.status(400).json({ message: 'Unsupported provider. Use the official WhatsApp Cloud API (Meta), Gallabox or Happilee.' });
+        }
+
+        if ((provider ?? existing.provider) === 'happilee' && accessToken) {
+            try {
+                await new HappileeService(accessToken).validate();
+            } catch (e) {
+                return res.status(400).json({ message: (e as Error).message });
+            }
         }
 
         if (isDefault) {

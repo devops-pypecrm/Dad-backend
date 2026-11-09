@@ -2,7 +2,7 @@ import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/prisma';
 import { encrypt, decrypt } from '../utils/encryption';
-import { IG_OAUTH_AUTHORIZE, IG_OAUTH_TOKEN, IG_SCOPES, instagramConfig, isInstagramConfigured } from '../config/instagram';
+import { IG_OAUTH_AUTHORIZE, IG_OAUTH_TOKEN, igScopes, instagramConfig, isInstagramConfigured } from '../config/instagram';
 import { ig, InstagramApiError } from './instagramApi';
 
 const STATE_SECRET = () => process.env.JWT_SECRET || instagramConfig().appSecret;
@@ -26,7 +26,7 @@ export const InstagramAuthService = {
         const state = jwt.sign({ o: params.organisationId, u: params.userId, r: params.returnPath }, STATE_SECRET(), { expiresIn: '15m' });
         const q = new URLSearchParams({
             enable_fb_login: '0', force_authentication: '1', client_id: c.appId, redirect_uri: c.redirectUri,
-            response_type: 'code', scope: IG_SCOPES.join(','), state
+            response_type: 'code', scope: igScopes().join(','), state
         });
         return `${IG_OAUTH_AUTHORIZE}?${q.toString()}`;
     },
@@ -71,7 +71,7 @@ export const InstagramAuthService = {
             }
             throw new InstagramApiError(`Step 2 (long-lived token) failed: ${d?.message || err.message}.${hint}`, d?.code, err.response?.status);
         }
-        return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), scopes: short.permissions.length ? short.permissions : IG_SCOPES };
+        return { token: long.access_token, expiresAt: new Date(Date.now() + long.expires_in * 1000), scopes: short.permissions.length ? short.permissions : igScopes() };
     },
 
     async fetchProfile(token: string) {

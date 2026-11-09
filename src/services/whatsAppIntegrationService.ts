@@ -173,7 +173,8 @@ export const WhatsAppIntegrationService = {
             metaDoc: message.document,
             metaAudio: message.audio,
             metaVideo: message.video,
-            metaLocation: message.location
+            metaLocation: message.location,
+            referral: message.referral // Click-to-WhatsApp ad / post attribution
         };
 
         if (!account) {
@@ -385,6 +386,12 @@ export const WhatsAppIntegrationService = {
                         data: { leadId: leadToLink.id }
                     });
                 }
+            }
+
+            // Click-to-WhatsApp ad attribution (Growth Tools module); never allowed to break message handling.
+            if (message.referral) {
+                const linked = (await prisma.whatsAppMessage.findUnique({ where: { id: messageRecord.id }, select: { leadId: true } }))?.leadId;
+                import('./whatsAppToolsService').then(m => m.WhatsAppToolsService.recordReferral(organisationId, normalizedPhone, linked, message.referral)).catch(e => console.error('[WhatsAppTools] referral save failed:', e));
             }
 
             // Re-read: the lead-creation block above may have linked a lead to this message.

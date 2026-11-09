@@ -12,5 +12,9 @@ export const initInstagramScheduler = () => {
     cron.schedule('40 * * * *', async () => {
         try { await prisma.instagramChatbotSession.deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } } }); } catch (e) { console.error('[InstagramScheduler] cleanup failed:', e); }
     });
+    // Every minute: publish scheduled posts (Growth Tools).
+    cron.schedule('* * * * *', async () => {
+        try { const { InstagramToolsService } = await import('./instagramToolsService'); await InstagramToolsService.processDue(); } catch (e) { console.error('[InstagramScheduler] publishing run failed:', e); }
+    });
     console.log('[InstagramScheduler] Jobs scheduled (token refresh daily, session cleanup hourly).');
 };
