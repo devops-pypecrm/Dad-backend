@@ -57,6 +57,56 @@ export class SalesTargetService {
         console.log(`[SalesTargetService] Recalculated targets for ${rows.length} users`);
     }
 
+
+    /** Won deals that count toward a target (for a group target: all its leaf descendants). */
+    static async getWonDeals(targetId: string) {
+        const root = await prisma.salesTarget.findUnique({ where: { id: targetId } });
+        if (!root || root.isDeleted) return null;
+
+        const leaves: any[] = [];
+        const walk = async (t: any, depth = 0) => {
+            const kids = depth < 6 ? await prisma.salesTarget.findMany({ where: { parentTargetId: t.id, isDeleted: false } }) : [];
+            if (t.autoDistributed && kids.length) { for (const k of kids) await walk(k, depth + 1); }
+            else if (t.assignedToId) leaves.push(t);
+        };
+        await walk(root);
+
+        const seen = new Set<string>();
+        const deals: any[] = [];
+        for (const t of leaves) {
+            const windowEnd = periodEndExclusive(t.endDate);
+            const rows = await prisma.opportunity.findMany({
+                where: {
+                    ownerId: t.assignedToId, stage: 'closed_won', isDeleted: false,
+                    ...(t.opportunityType ? { type: t.opportunityType } : {}),
+                    ...(t.productId ? { quotes: { some: { lineItems: { some: { productId: t.productId } } } } } : {}),
+                    OR: [
+                        { closeDate: { gte: t.startDate, lt: windowEnd } },
+                        { closeDate: null, updatedAt: { gte: t.startDate, lt: windowEnd } }
+                    ]
+                } as any,
+                select: {
+                    id: true, name: true, amount: true, closeDate: true, updatedAt: true,
+                    account: { select: { name: true } },
+                    owner: { select: { id: true, firstName: true, lastName: true } }
+                },
+                orderBy: { closeDate: 'desc' },
+                take: 200
+            });
+            for (const o of rows as any[]) {
+                if (seen.has(o.id)) continue;
+                seen.add(o.id);
+                deals.push({
+                    id: o.id, name: o.name, amount: o.amount, accountName: o.account?.name || null,
+                    ownerName: o.owner ? `${o.owner.firstName || ''} ${o.owner.lastName || ''}`.trim() : null,
+                    closedAt: o.closeDate || o.updatedAt
+                });
+            }
+        }
+        deals.sort((a, b) => +new Date(b.closedAt) - +new Date(a.closedAt));
+        return deals;
+    }
+
     private static async computeForUser(userId: string, date: Date) {
         // Targets store their last day at 00:00, so the period really runs until the end of that day.
         // (Previously a deal closed on the last day was never counted, and the target even stopped updating.)

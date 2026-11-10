@@ -1,5 +1,6 @@
 import express from 'express';
 import {
+    getTargetWonDeals,
     assignTarget,
     getMyTargets,
     getTeamTargets,
@@ -21,6 +22,7 @@ router.get('/', protect, getMyTargets);
 router.get('/team', protect, getTeamTargets);
 
 // Get daily achievement for notification
+router.get('/:id/won-deals', protect, getTargetWonDeals);
 router.get('/daily', protect, getDailyAchievement);
 router.post('/daily/acknowledge', protect, acknowledgeDailyNotification);
 

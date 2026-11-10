@@ -436,6 +436,16 @@ const distributeToSubordinates = async (
 };
 
 // Get current user's targets
+/** Optional `?month=YYYY-MM`: keep only targets whose period overlaps that month. */
+const monthOverlap = (req: Request): any => {
+    const m = String(req.query.month || '').match(/^(\d{4})-(\d{2})$/);
+    if (!m) return {};
+    const start = new Date(Date.UTC(+m[1], +m[2] - 1, 1));
+    const end = new Date(Date.UTC(+m[1], +m[2], 1));
+    // endDate is stored at 00:00 of the period's last day, so it runs to the end of that day.
+    return { startDate: { lt: end }, endDate: { gte: new Date(start.getTime() - 24 * 60 * 60 * 1000) } };
+};
+
 export const getMyTargets = async (req: Request, res: Response) => {
     try {
         const user = (req as any).user;
@@ -443,7 +453,8 @@ export const getMyTargets = async (req: Request, res: Response) => {
         const targets = await prisma.salesTarget.findMany({
             where: {
                 assignedToId: user.id,
-                isDeleted: false
+                isDeleted: false,
+                ...monthOverlap(req)
             },
             include: {
                 assignedBy: { select: { firstName: true, lastName: true } },
@@ -472,7 +483,8 @@ export const getTeamTargets = async (req: Request, res: Response) => {
                     { assignedToId: { in: [...subordinateIds, user.id] } },
                     { teamId: { not: null }, assignedById: user.id } // Include team targets created by user
                 ],
-                isDeleted: false
+                isDeleted: false,
+                ...monthOverlap(req)
             },
             include: {
                 assignedTo: { select: { firstName: true, lastName: true, email: true, position: true } },
@@ -740,6 +752,28 @@ export const getSubordinates = async (req: Request, res: Response) => {
         }
 
         res.json({ subordinates });
+    } catch (error) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
+
+export const getTargetWonDeals = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const target = await prisma.salesTarget.findUnique({ where: { id: req.params.id } });
+        if (!target || target.isDeleted) return res.status(404).json({ message: 'Target not found' });
+        const orgId = getOrgId(user);
+        if (!user.isSuperAdmin && target.organisationId !== orgId) return res.status(404).json({ message: 'Target not found' });
+        const isAdminUser = user.isSuperAdmin || ADMIN_ROLES.includes(user.role);
+        if (!isAdminUser && target.assignedToId !== user.id) {
+            const downline = await getSubordinateIdsRecursive(user.id);
+            const mine = target.assignedById === user.id;
+            if (!mine && !(target.assignedToId && downline.includes(target.assignedToId))) {
+                return res.status(403).json({ message: 'Not allowed' });
+            }
+        }
+        const deals = await SalesTargetService.getWonDeals(target.id);
+        res.json({ deals: deals || [] });
     } catch (error) {
         res.status(500).json({ message: (error as Error).message });
     }
