@@ -51,3 +51,16 @@ export const requireInstagramFeature = async (req: Request, res: Response, next:
         next(err);
     }
 };
+
+export const isAiAssistantEnabled = (organisationId: string | null | undefined) => hasFeature(organisationId, 'ai_assistant');
+export const AI_NOT_ENABLED_MESSAGE = 'The AI Assistant is not enabled for your organisation. Contact Pype CRM support to get it switched on.';
+
+/** Express guard for every AI Assistant Hub route. */
+export const requireAiFeature = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        if (await isAiAssistantEnabled(getOrgId((req as any).user))) return next();
+        res.status(403).json({ message: AI_NOT_ENABLED_MESSAGE, code: 'AI_NOT_ENABLED' });
+    } catch (err) {
+        next(err);
+    }
+};

@@ -21,6 +21,11 @@ export const PLATFORM_FEATURES: PlatformFeature[] = [
         description: 'Shared inbox for Instagram DMs, keyword chatbots with a drag-and-drop workflow builder, and Ask-to-Follow comment bots, plus the Instagram connection. When off, the organisation sees none of it and nothing is sent or received.'
     },
     {
+        key: 'ai_assistant',
+        label: 'AI Assistant Hub',
+        description: 'A separate AI section in the sidebar for admins: voice and chat assistant over live CRM data, daily briefing, hot-lead picks, smart message drafting, lead summaries, pipeline forecast and deal-risk alerts, and team coaching. When off, the organisation sees none of it and its endpoints are blocked.'
+    },
+    {
         key: 'workflow_automation',
         label: 'Workflows & Automation',
         description: 'The Workflows and Automation tabs under System in the sidebar, and the workflow automation builder/engine. When off, the organisation does not see either tab.'
