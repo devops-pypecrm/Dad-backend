@@ -1,6 +1,16 @@
 
 import prisma from '../config/prisma';
 import { NotificationService } from './notificationService';
+import { runWithCurrency } from '../utils/moneyConversion';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A target's endDate is stored as midnight at the START of its last day; the period includes that whole day. */
+const periodEndExclusive = (endDate: Date): Date => {
+    const d = new Date(endDate);
+    const atMidnight = d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0;
+    return atMidnight ? new Date(d.getTime() + DAY_MS) : new Date(d.getTime() + 1);
+};
 
 export class SalesTargetService {
     /**
@@ -11,117 +21,125 @@ export class SalesTargetService {
      */
     static async updateProgressForUser(userId: string, date: Date = new Date()) {
         try {
-            console.log(`[SalesTargetService] Updating progress for user: ${userId}`);
-
-            // 1. Find all active targets (and completed ones to check for regression)
-            const activeTargets = await prisma.salesTarget.findMany({
-                where: {
-                    assignedToId: userId,
-                    status: { in: ['active', 'completed'] },
-                    isDeleted: false,
-                    autoDistributed: false, // Only update leaf nodes
-                    startDate: { lte: date },
-                    endDate: { gte: date }
-                }
+            // Money is stored in USD and the Prisma money middleware converts to the *current request's*
+            // currency. Targets are entered in the organisation's currency, so always compute inside the
+            // owner's organisation currency - otherwise a call from cron/webhook (no request context) would
+            // compare raw USD against an INR target and the progress would look almost empty.
+            const owner = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { organisation: { select: { currency: true } } }
             });
-
-            if (activeTargets.length === 0) return;
-
-            for (const target of activeTargets) {
-                let achievedValue = 0;
-
-                // Construct filter for Opportunity Type if specified
-                const typeFilter = target.opportunityType ? { type: target.opportunityType } : {};
-
-                // 2. Calculate based on metric
-                if (target.metric === 'units' || target.productId) {
-                    // Calculate from QuoteLineItems (Units or Product Revenue)
-                    const aggregation = await prisma.quoteLineItem.aggregate({
-                        where: {
-                            quote: {
-                                opportunity: {
-                                    ownerId: userId,
-                                    stage: 'closed_won',
-                                    isDeleted: false,
-                                    updatedAt: { gte: target.startDate, lte: target.endDate },
-                                    ...typeFilter
-                                }
-                            },
-                            productId: target.productId || undefined
-                        },
-                        _sum: {
-                            quantity: true,
-                            total: true
-                        }
-                    });
-
-                    if (target.metric === 'units') {
-                        achievedValue = aggregation._sum.quantity || 0;
-                    } else {
-                        // Revenue for specific product
-                        achievedValue = aggregation._sum.total || 0;
-                    }
-                } else {
-                    // Generic Revenue (Total Opportunity Amount)
-                    const aggregation = await prisma.opportunity.aggregate({
-                        where: {
-                            ownerId: userId,
-                            stage: 'closed_won',
-                            isDeleted: false,
-                            updatedAt: {
-                                gte: target.startDate,
-                                lte: target.endDate
-                            },
-                            ...typeFilter
-                        },
-                        _sum: {
-                            amount: true
-                        }
-                    });
-                    achievedValue = aggregation._sum.amount || 0;
-                }
-
-                // 3. Update the target logic
-                let newStatus = target.status;
-
-                // Check for completion
-                if (achievedValue >= target.targetValue && target.status !== 'completed') {
-                    newStatus = 'completed';
-
-                    // Notify user (disabled as goal/target module is removed)
-                    // try {
-                    //     await NotificationService.send(
-                    //         userId,
-                    //         'Sales Target Achieved! 🎯',
-                    //         `Congratulations! You have achieved your sales target for ${target.period} (${target.metric || 'revenue'}). Great work!`,
-                    //         'success'
-                    //     );
-                    // } catch (err) {
-                    //     console.error('[SalesTargetService] Failed to send notification', err);
-                    // }
-                } else if (achievedValue < target.targetValue && target.status === 'completed') {
-                    // Regression (e.g. order cancelled)
-                    newStatus = 'active';
-                }
-
-                console.log(`[SalesTargetService] Target ${target.id}: Achieved ${achievedValue} / ${target.targetValue} (${newStatus})`);
-
-                // ALWAYS Update
-                await prisma.salesTarget.update({
-                    where: { id: target.id },
-                    data: {
-                        achievedValue,
-                        status: newStatus
-                    }
-                });
-
-                // Check for hierarchy rollup
-                if (target.parentTargetId) {
-                    await SalesTargetService.rollupToParent(target.parentTargetId);
-                }
-            }
+            const currency = (owner?.organisation?.currency || 'USD').toUpperCase();
+            await runWithCurrency(currency, () => SalesTargetService.computeForUser(userId, date));
         } catch (error) {
             console.error('[SalesTargetService] Error updating progress:', error);
+        }
+    }
+
+    /** Re-computes every active leaf target in its current period. Run on a schedule as a safety net. */
+    static async recalculateAllActive() {
+        const now = new Date();
+        const rows = await prisma.salesTarget.findMany({
+            where: {
+                assignedToId: { not: null },
+                isDeleted: false,
+                autoDistributed: false,
+                status: { in: ['active', 'completed'] },
+                startDate: { lte: now },
+                endDate: { gte: new Date(now.getTime() - DAY_MS) }
+            },
+            select: { assignedToId: true },
+            distinct: ['assignedToId']
+        });
+        for (const r of rows) {
+            if (r.assignedToId) await SalesTargetService.updateProgressForUser(r.assignedToId, now);
+        }
+        console.log(`[SalesTargetService] Recalculated targets for ${rows.length} users`);
+    }
+
+    private static async computeForUser(userId: string, date: Date) {
+        // Targets store their last day at 00:00, so the period really runs until the end of that day.
+        // (Previously a deal closed on the last day was never counted, and the target even stopped updating.)
+        const activeTargets = await prisma.salesTarget.findMany({
+            where: {
+                assignedToId: userId,
+                status: { in: ['active', 'completed'] },
+                isDeleted: false,
+                autoDistributed: false, // Only update leaf nodes
+                startDate: { lte: date },
+                endDate: { gte: new Date(date.getTime() - DAY_MS) }
+            }
+        });
+
+        for (const target of activeTargets) {
+            const windowEnd = periodEndExclusive(target.endDate);
+            const typeFilter = target.opportunityType ? { type: target.opportunityType } : {};
+
+            // A deal belongs to the period it was CLOSED in (closeDate is set when the deal is closed and is
+            // what every dashboard uses); fall back to updatedAt only for old deals that have no closeDate.
+            const inPeriod = {
+                OR: [
+                    { closeDate: { gte: target.startDate, lt: windowEnd } },
+                    { closeDate: null, updatedAt: { gte: target.startDate, lt: windowEnd } }
+                ]
+            };
+            const wonWhere = {
+                ownerId: userId,
+                stage: 'closed_won',
+                isDeleted: false,
+                ...inPeriod,
+                ...typeFilter
+            };
+
+            let achievedValue = 0;
+
+            if (target.productId) {
+                // Product target: only that product's quote lines count.
+                const agg = await prisma.quoteLineItem.aggregate({
+                    where: { productId: target.productId, quote: { opportunity: wonWhere } },
+                    _sum: { quantity: true, total: true }
+                });
+                achievedValue = target.metric === 'units' ? (agg._sum.quantity || 0) : (agg._sum.total || 0);
+            } else if (target.metric === 'units') {
+                // Units without a product: quantity from the deal's quote lines when it has any, otherwise the
+                // deal itself is one unit. (Counting only quote lines made every unit target stay at 0 for
+                // teams that close deals without building a quote.)
+                const won = await prisma.opportunity.findMany({ where: wonWhere as any, select: { id: true } });
+                if (won.length > 0) {
+                    const lines = await prisma.quoteLineItem.findMany({
+                        where: { quote: { opportunityId: { in: won.map((o) => o.id) } } },
+                        select: { quantity: true, quote: { select: { opportunityId: true } } }
+                    });
+                    const qtyByOpp = new Map<string, number>();
+                    for (const l of lines) {
+                        const id = l.quote?.opportunityId;
+                        if (id) qtyByOpp.set(id, (qtyByOpp.get(id) || 0) + (l.quantity || 0));
+                    }
+                    achievedValue = won.reduce((sum, o) => {
+                        const q = qtyByOpp.get(o.id) || 0;
+                        return sum + (q > 0 ? q : 1);
+                    }, 0);
+                }
+            } else {
+                // Revenue: total value of the won deals.
+                const agg = await prisma.opportunity.aggregate({ where: wonWhere as any, _sum: { amount: true } });
+                achievedValue = agg._sum.amount || 0;
+            }
+
+            let newStatus = target.status;
+            if (achievedValue >= target.targetValue && target.status !== 'completed') newStatus = 'completed';
+            else if (achievedValue < target.targetValue && target.status === 'completed') newStatus = 'active'; // e.g. deal deleted
+
+            console.log(`[SalesTargetService] Target ${target.id}: Achieved ${achievedValue} / ${target.targetValue} (${newStatus})`);
+
+            await prisma.salesTarget.update({
+                where: { id: target.id },
+                data: { achievedValue, status: newStatus }
+            });
+
+            if (target.parentTargetId) {
+                await SalesTargetService.rollupToParent(target.parentTargetId);
+            }
         }
     }
 

@@ -59,6 +59,17 @@ export const initCronJobs = () => {
     });
 
     // Run every hour for Meeting Reminders
+    // Safety net: re-derive sales-target progress from the actual won deals twice an hour, so a missed
+    // trigger (server restart mid-request, a deal changed some other way) can never leave a target stale.
+    cron.schedule('10,40 * * * *', async () => {
+        try {
+            const { SalesTargetService } = await import('./salesTargetService');
+            await SalesTargetService.recalculateAllActive();
+        } catch (error) {
+            console.error('[Cron] Error recalculating sales targets:', error);
+        }
+    });
+
     cron.schedule('0 * * * *', async () => {
         console.log('[Cron] Running meeting reminders check...');
         try {

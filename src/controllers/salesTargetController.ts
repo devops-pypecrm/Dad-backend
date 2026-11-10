@@ -528,7 +528,8 @@ export const getDailyAchievement = async (req: Request, res: Response) => {
                 status: 'active',
                 isDeleted: false,
                 startDate: { lte: new Date() },
-                endDate: { gte: new Date() }
+                // endDate is midnight at the START of the last day, so allow a day of grace
+                endDate: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
             }
         });
 

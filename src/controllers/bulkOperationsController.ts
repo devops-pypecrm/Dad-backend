@@ -549,6 +549,11 @@ export const bulkOpportunityOperations = async (req: Request, res: Response) => 
     let result;
     let message = '';
 
+    // Owners whose won deals may change here - their sales-target progress is refreshed afterwards.
+    const targetOwnersBefore = ['update-stage', 'assign-owner', 'delete'].includes(action)
+      ? await prisma.opportunity.findMany({ where: { id: { in: opportunityIds }, organisationId }, select: { ownerId: true } })
+      : [];
+
     switch (action) {
       case 'update-stage':
         if (!data?.stage) {
@@ -671,6 +676,14 @@ export const bulkOpportunityOperations = async (req: Request, res: Response) => 
     }
 
     logger.info(`Bulk opportunity operation completed: ${action}`, 'BULK_OPPORTUNITIES', userId, organisationId, { count: opportunityIds.length });
+    if (targetOwnersBefore.length > 0) {
+      const ownerIds = new Set<string>(targetOwnersBefore.map((o) => o.ownerId).filter(Boolean) as string[]);
+      if (action === 'assign-owner' && data?.ownerId) ownerIds.add(data.ownerId);
+      import('../services/salesTargetService').then(({ SalesTargetService }) => {
+        ownerIds.forEach((id) => SalesTargetService.updateProgressForUser(id).catch(console.error));
+      }).catch(console.error);
+    }
+
     return ResponseHandler.success(res, { processed: result?.count || opportunityIds.length }, message);
 
   } catch (error: any) {
