@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { generateAssistantReply, streamAssistantReply, AssistantTurn } from '../services/aiAssistantService';
+import { generateAssistantReply, streamAssistantReply, warmSnapshot, AssistantTurn } from '../services/aiAssistantService';
 import { getOrgId } from '../utils/hierarchyUtils';
 import { isOrgAdmin } from '../utils/roleUtils';
 
@@ -47,4 +47,12 @@ export const streamWithAssistant = async (req: Request, res: Response) => {
     }
     send({ done: true });
     res.end();
+};
+
+/** Called when the assistant page opens so the first answer doesn't wait on the database. */
+export const warmAssistant = async (req: Request, res: Response) => {
+    const user = (req as any).user;
+    const organisationId = getOrgId(user);
+    if (isOrgAdmin(user) && organisationId) warmSnapshot(organisationId);
+    res.status(204).end();
 };

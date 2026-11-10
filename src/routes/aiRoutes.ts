@@ -1,7 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware';
 import { generateContent } from '../controllers/aiController';
-import { chatWithAssistant, streamWithAssistant } from '../controllers/aiAssistantController';
+import { chatWithAssistant, streamWithAssistant, warmAssistant } from '../controllers/aiAssistantController';
 import * as hub from '../controllers/aiHubController';
 import { requireAiFeature } from '../services/whatsAppFeature';
 import { generalLimiter } from '../middleware/rateLimiter';
@@ -14,6 +14,7 @@ router.use(protect);
 router.post('/generate', generalLimiter, generateContent);
 
 // AI Assistant Hub — switched on per organisation by the Super Admin (feature key 'ai_assistant').
+router.get('/assistant/warm', requireAiFeature, warmAssistant);
 router.post('/assistant/stream', requireAiFeature, generalLimiter, streamWithAssistant);
 router.post('/assistant/chat', requireAiFeature, generalLimiter, chatWithAssistant);
 router.get('/hub/briefing', requireAiFeature, generalLimiter, hub.briefing);

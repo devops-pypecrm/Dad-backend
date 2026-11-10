@@ -154,7 +154,7 @@ export async function teamCoach(orgId: string) {
         prisma.lead.groupBy({ by: ['assignedToId'], where: { organisationId: orgId, isDeleted: false, assignedToId: { in: ids }, createdAt: { gte: monthStart } }, _count: { _all: true } }),
         prisma.lead.groupBy({ by: ['assignedToId'], where: { organisationId: orgId, isDeleted: false, assignedToId: { in: ids } }, _count: { _all: true } }),
         prisma.opportunity.groupBy({ by: ['ownerId'], where: { organisationId: orgId, isDeleted: false, stage: 'closed_won', closeDate: { gte: monthStart }, ownerId: { in: ids } }, _count: { _all: true }, _sum: { amount: true } }),
-        prisma.followUp.groupBy({ by: ['assignedToId' as any], where: { organisationId: orgId, isDeleted: false, dueDate: { lt: now }, status: { notIn: ['completed', 'cancelled'] as any }, assignedToId: { in: ids } } as any, _count: { _all: true } }).catch(() => [] as any[]),
+        prisma.followUp.groupBy({ by: ['assignedToId' as any], where: { organisationId: orgId, isDeleted: false, dueDate: { lt: now }, status: { notIn: ['completed'] as any }, assignedToId: { in: ids } } as any, _count: { _all: true } }).catch(() => [] as any[]),
         prisma.interaction.groupBy({ by: ['createdById'], where: { organisationId: orgId, type: 'call', date: { gte: monthStart }, createdById: { in: ids } }, _count: { _all: true } }),
     ]);
     const m = (rows: any[], key: string) => new Map(rows.map((r) => [r[key], r]));
