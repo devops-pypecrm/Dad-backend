@@ -168,8 +168,7 @@ export const getOpportunities = async (req: Request, res: Response) => {
                 owner: { select: { id: true, firstName: true, lastName: true, profileImage: true } },
                 branch: { select: { name: true } },
                 emiSchedule: { select: { id: true, status: true } },
-                lead: { select: { id: true, firstName: true, lastName: true, status: true, source: true, sourceDetails: true } },
-                wonTeam: { select: { id: true, name: true } }
+                lead: { select: { id: true, firstName: true, lastName: true, status: true, source: true, sourceDetails: true } }
             },
             skip,
             take: limit,
@@ -430,7 +429,6 @@ export const getOpportunityById = async (req: Request, res: Response) => {
                     }
                 },
                 owner: { select: { id: true, firstName: true, lastName: true, profileImage: true, email: true } },
-                wonTeam: { select: { id: true, name: true } },
                 contacts: true,
                 lead: {
                     select: {
@@ -525,25 +523,6 @@ export const updateOpportunity = async (req: Request, res: Response) => {
             opportunityUpdates.leadStatus = opportunityUpdates.stage === 'closed_won' ? 'won' : 'lost';
         }
 
-        // Snapshot the owner's team AT THE MOMENT this deal is won — deliberately
-        // captured here, once, rather than derived live later (reassignment
-        // afterwards must not change which team gets credit for the win). The
-        // effective owner is whichever one this same request is setting, if any,
-        // else the opportunity's current owner.
-        if (isClosingNow && opportunityUpdates.stage === 'closed_won') {
-            const effectiveOwnerId: string | null =
-                (opportunityUpdates.owner && typeof opportunityUpdates.owner === 'object' && 'connect' in opportunityUpdates.owner)
-                    ? opportunityUpdates.owner.connect.id
-                    : currentOpp.ownerId;
-            if (effectiveOwnerId) {
-                const ownerUser = await prisma.user.findUnique({
-                    where: { id: effectiveOwnerId },
-                    select: { teamId: true }
-                });
-                opportunityUpdates.wonTeamId = ownerUser?.teamId ?? null;
-            }
-        }
-
         if (opportunityUpdates.customFields) {
             const { CustomFieldValidationService } = await import('../services/customFieldValidationService');
             await CustomFieldValidationService.validateFields('Opportunity', currentOpp.organisationId, opportunityUpdates.customFields);
@@ -571,8 +550,7 @@ export const updateOpportunity = async (req: Request, res: Response) => {
             data: opportunityUpdates,
             include: {
                 account: { select: { name: true } },
-                owner: { select: { id: true, firstName: true, lastName: true, profileImage: true } },
-                wonTeam: { select: { id: true, name: true } }
+                owner: { select: { id: true, firstName: true, lastName: true, profileImage: true } }
             }
         });
 
