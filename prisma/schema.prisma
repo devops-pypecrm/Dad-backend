@@ -261,6 +261,7 @@ model Team {
   organisation            Organisation             @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   salesTargets            SalesTarget[]
   whatsAppAssignmentRules WhatsAppAssignmentRule[]
+  wonOpportunities        Opportunity[]            @relation("OpportunityWonTeam")
 
   @@index([organisationId])
 }
@@ -608,6 +609,12 @@ model Opportunity {
   type            OpportunityType @default(NEW_BUSINESS)
   branchId        String?
   branch          Branch?         @relation(fields: [branchId], references: [id])
+  // Snapshot of the owner's team AT THE MOMENT the deal was marked closed_won —
+  // deliberately NOT derived from the current owner/team (which can drift after
+  // reassignment). Set once, in updateOpportunity's closed_won branch; never
+  // backfilled for opportunities won before this field existed.
+  wonTeamId       String?
+  wonTeam         Team?           @relation("OpportunityWonTeam", fields: [wonTeamId], references: [id])
 
   @@index([organisationId])
   @@index([stage])
@@ -615,6 +622,7 @@ model Opportunity {
   @@index([pipelineId])
   @@index([branchId])
   @@index([ownerId])
+  @@index([wonTeamId])
 }
 
 enum OpportunityType {

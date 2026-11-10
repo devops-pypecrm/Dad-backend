@@ -236,7 +236,7 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
                     where: { stage: { in: ['closed_won', 'closed_lost'] } },
                     orderBy: { updatedAt: 'desc' },
                     take: 1,
-                    select: { stage: true, lostReason: true }
+                    select: { stage: true, lostReason: true, wonTeam: { select: { id: true, name: true } } }
                 }
             },
             skip: (page - 1) * pageSize,
@@ -245,12 +245,16 @@ export const getLeads = async (req: express.Request, res: express.Response) => {
         });
 
         // Derive a human-readable closed opportunity status (Won/Lost) for leads that converted.
+        // wonTeamName is a point-in-time snapshot of the team that owned the deal when it was
+        // won (see Opportunity.wonTeamId) — null for a Lost lead, or a Won lead closed before
+        // this field existed (nothing to backfill from).
         const leadsWithClosedStatus = leads.map(lead => {
             const closedOpp = (lead as any).convertedOpportunities?.[0];
             const closedOpportunityStatus = closedOpp
                 ? (closedOpp.stage === 'closed_won' ? 'Won' : 'Lost')
                 : null;
-            return { ...lead, closedOpportunityStatus };
+            const wonTeamName = closedOpp?.stage === 'closed_won' ? (closedOpp.wonTeam?.name ?? null) : null;
+            return { ...lead, closedOpportunityStatus, wonTeamName };
         });
 
         res.json({ leads: leadsWithClosedStatus, page, pages: Math.ceil(total / pageSize), total });
@@ -636,7 +640,10 @@ export const getLeadById = async (req: express.Request, res: express.Response) =
                 // 'won'/'lost'/'converted' can also just be a manually-picked custom status from
                 // the org's configured lead-status list, unrelated to a real Opportunity ever
                 // existing. Expose the real signal so the frontend can gate "Move to Pipeline" on it.
-                convertedOpportunities: { where: { isDeleted: false }, select: { id: true, stage: true } }
+                convertedOpportunities: {
+                    where: { isDeleted: false },
+                    select: { id: true, stage: true, lostReason: true, wonTeam: { select: { id: true, name: true } } }
+                }
             }
         });
 
@@ -647,7 +654,18 @@ export const getLeadById = async (req: express.Request, res: express.Response) =
             });
         }
 
-        res.json({ ...lead, isConverted: lead.convertedOpportunities.length > 0 });
+        // Same derived fields as getLeads (list endpoint) — see that function's comment
+        // for why wonTeamName is a point-in-time snapshot, not a live lookup.
+        const closedOpp = lead.convertedOpportunities.find(o => o.stage === 'closed_won' || o.stage === 'closed_lost');
+        const closedOpportunityStatus = closedOpp ? (closedOpp.stage === 'closed_won' ? 'Won' : 'Lost') : null;
+        const wonTeamName = closedOpp?.stage === 'closed_won' ? ((closedOpp as any).wonTeam?.name ?? null) : null;
+
+        res.json({
+            ...lead,
+            isConverted: lead.convertedOpportunities.length > 0,
+            closedOpportunityStatus,
+            wonTeamName
+        });
     } catch (error) {
         res.status(500).json({ message: (error as Error).message });
     }
@@ -2344,12 +2362,18 @@ export const getReEnquiryHistory = async (req: express.Request, res: express.Res
 
         const snapshots: any[] = (lead.sourceDetails as any)?.reEnquiries || [];
 
-        const events = reEnquiryInteractions.map((interaction, index) => {
+        // `eventIndex` here MUST stay an index into `snapshots`/`reEnquiryInteractions`
+        // (NOT into the final merged/sorted array below) — `splitReEnquiryIntoLead`
+        // takes this value back and indexes `sourceDetails.reEnquiries` with it
+        // directly, so re-enquiry events keep their own stable numbering even once
+        // follow-up events are interleaved alongside them for display.
+        const reEnquiryEvents = reEnquiryInteractions.map((interaction, index) => {
             const snapshot = snapshots[index];
             const nameMatch = (interaction.description || '').match(/^Lead (.+?) has enquired again/);
             const nameAtReEnquiryTime = nameMatch ? nameMatch[1].trim() : null;
 
             return {
+                type: 're_enquiry' as const,
                 eventIndex: index,
                 date: interaction.date,
                 name: snapshot?.submittedName || nameAtReEnquiryTime || null,
@@ -2358,10 +2382,56 @@ export const getReEnquiryHistory = async (req: express.Request, res: express.Res
                 source: snapshot?.source || null,
                 // campaign / ad / form / message that came with this particular submission
                 details: snapshot?.details || null,
+                // "course interested in" for THIS submission — only present on
+                // re-enquiries recorded after this field was added (see
+                // duplicateLeadService.ts); older snapshots have none to show.
+                enquiryAbout: snapshot?.enquiryAbout || null,
                 hasFullSnapshot: !!(snapshot?.submittedPhone || snapshot?.submittedEmail),
                 alreadySplitLeadId: snapshot?.splitIntoLeadId || null
             };
-        }).reverse(); // most recent first
+        });
+
+        const followUps = await prisma.followUp.findMany({
+            where: { leadId: id, isDeleted: false },
+            select: {
+                id: true,
+                subject: true,
+                description: true,
+                status: true,
+                priority: true,
+                dueDate: true,
+                assignedTo: { select: { id: true, firstName: true, lastName: true } }
+            },
+            orderBy: { dueDate: 'asc' }
+        });
+
+        const followUpEvents = followUps.map(f => ({
+            type: 'follow_up' as const,
+            eventIndex: null,
+            date: f.dueDate,
+            name: null,
+            phone: null,
+            email: null,
+            source: null,
+            details: null,
+            enquiryAbout: null,
+            hasFullSnapshot: false,
+            alreadySplitLeadId: null,
+            followUp: {
+                id: f.id,
+                subject: f.subject,
+                description: f.description,
+                status: f.status,
+                priority: f.priority,
+                assignedTo: f.assignedTo
+                    ? `${f.assignedTo.firstName || ''} ${f.assignedTo.lastName || ''}`.trim()
+                    : null
+            }
+        }));
+
+        const events = [...reEnquiryEvents, ...followUpEvents].sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        ); // most recent first
 
         res.json({
             leadId: lead.id,

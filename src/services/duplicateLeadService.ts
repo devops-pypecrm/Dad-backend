@@ -289,7 +289,12 @@ export const DuplicateLeadService = {
                                 // instead of just a name.
                                 submittedName: `${newData.firstName || ''} ${newData.lastName || ''}`.trim() || null,
                                 submittedPhone: newData.phone || null,
-                                submittedEmail: newData.email || null
+                                submittedEmail: newData.email || null,
+                                // "Course interested in" for this specific re-enquiry — distinct
+                                // from the merged lead's current `enquiryAbout` above, which gets
+                                // overwritten on every re-enquiry. Only present going forward;
+                                // re-enquiries recorded before this field existed have none.
+                                enquiryAbout: newData.enquiryAbout || newData.sourceDetails?.message || null
                             }
                         ]
                     }
