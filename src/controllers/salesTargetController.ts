@@ -30,8 +30,9 @@ const METRICS = ['revenue', 'units'];
 const SCOPES = ['INDIVIDUAL', 'HIERARCHY'];
 
 // Helper: Calculate period dates
-const calculatePeriodDates = (period: string): { startDate: Date; endDate: Date } => {
-    const now = new Date();
+/** Dates for a period. With `anchor` (year + 1-12 month) the period containing that month is used instead of the current one. */
+const calculatePeriodDates = (period: string, anchor?: { year: number; month: number }): { startDate: Date; endDate: Date } => {
+    const now = anchor ? new Date(anchor.year, anchor.month - 1, 1) : new Date();
     let startDate = new Date(now.getFullYear(), now.getMonth(), 1);
     let endDate = new Date();
 
@@ -58,7 +59,7 @@ const calculatePeriodDates = (period: string): { startDate: Date; endDate: Date 
 export const assignTarget = async (req: Request, res: Response) => {
     try {
         const user = (req as any).user;
-        const { assignToUserId, teamId, targetValue, period, metric = 'revenue', productId, scope = 'HIERARCHY', opportunityType } = req.body; // Default to revenue & hierarchy (legacy support)
+        const { assignToUserId, teamId, targetValue, period, metric = 'revenue', productId, scope = 'HIERARCHY', opportunityType, year, month } = req.body; // Default to revenue & hierarchy (legacy support)
         const userOrgId = getOrgId(user);
 
         if ((!assignToUserId && !teamId) || !targetValue || !period) {
@@ -85,7 +86,20 @@ export const assignTarget = async (req: Request, res: Response) => {
             if (!product) return res.status(400).json({ message: 'Product not found' });
         }
 
-        const { startDate, endDate } = calculatePeriodDates(period);
+        // Optional: which month / quarter / year the target is for (defaults to the current one).
+        let anchor: { year: number; month: number } | undefined;
+        if (year !== undefined && year !== null && year !== '') {
+            const y = Number(year);
+            const m = period === 'yearly' ? 1 : Number(month);
+            if (!Number.isInteger(y) || y < 2000 || y > 2100 || !Number.isInteger(m) || m < 1 || m > 12) {
+                return res.status(400).json({ message: 'Choose a valid year and month for the target' });
+            }
+            anchor = { year: y, month: m };
+        }
+        const { startDate, endDate } = calculatePeriodDates(period, anchor);
+        if (anchor && endDate.getTime() + 24 * 60 * 60 * 1000 <= Date.now()) {
+            return res.status(400).json({ message: 'That period has already ended — choose the current or a future month, quarter or year' });
+        }
 
         let mainTarget;
         const childTargets = [];
