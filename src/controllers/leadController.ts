@@ -739,7 +739,16 @@ export const updateLead = async (req: express.Request, res: express.Response) =>
                 select: { branchId: true, teamId: true }
             });
             if (assignedUser) {
-                if (assignedUser.branchId) updates.branchId = assignedUser.branchId;
+                if (assignedUser.branchId && assignedUser.branchId !== currentLead.branchId) {
+                    // A phone number can exist only once per branch (unique phone+org+branch, soft-deleted rows included).
+                    // If the new owner's branch already holds another lead with this number, moving this lead there
+                    // would fail with a duplicate error and block EVERY edit/assignment on it — so keep its branch.
+                    const clash = await prisma.lead.findFirst({
+                        where: { organisationId: currentLead.organisationId, phone: (updates.phone || currentLead.phone), branchId: assignedUser.branchId, id: { not: leadId } },
+                        select: { id: true }
+                    });
+                    if (!clash) updates.branchId = assignedUser.branchId;
+                }
                 if (assignedUser.teamId) updates.teamId = assignedUser.teamId;
             }
 
