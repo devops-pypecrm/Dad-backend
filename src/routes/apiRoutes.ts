@@ -148,6 +148,7 @@ router.post('/leads', verifyApiKey, async (req, res) => {
                         campaignName: resolvedCampaignName || undefined,
                         formName: resolvedFormName || undefined,
                         siteUrl: siteAddress || undefined,
+                        gclid: (req.body.gclid || req.body.gcl_id || undefined),
                         rawPayload: req.body
                     }
                 },
@@ -202,6 +203,7 @@ router.post('/leads', verifyApiKey, async (req, res) => {
                     campaignName: resolvedCampaignName || undefined,
                     formName: resolvedFormName || undefined,
                     siteUrl: siteAddress || undefined,
+                        gclid: (req.body.gclid || req.body.gcl_id || undefined),
                     rawPayload: req.body
                 }
             }

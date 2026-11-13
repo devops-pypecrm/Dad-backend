@@ -1248,7 +1248,7 @@ export const deleteLead = async (req: express.Request, res: express.Response) =>
 
 export const createBulkLeads = async (req: express.Request, res: express.Response) => {
     try {
-        const { leads, assignmentRuleId, applyAssignmentRules, splitUserIds, splitStartIndex, flagAsReEnquiry } = req.body;
+        const { leads, assignmentRuleId, applyAssignmentRules, splitUserIds, splitStartIndex, flagAsReEnquiry, importSessionId, fileName, totalRowsInFile } = req.body;
         // Resuming a large import that got interrupted (e.g. the browser tab
         // closed/refreshed mid-upload) means re-sending the whole file from
         // the start - without this, every already-created lead in that file
@@ -1286,6 +1286,11 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
         let blockedCount = 0;
         let reEnquiryCount = 0;
         const errors: any[] = [];
+        // Every row that did NOT become a brand-new lead, with the reason - persisted on the import
+        // record below so "where did row N go?" can always be answered after the upload.
+        const notCreated: { row: number; name: string; phone: string; outcome: string; reason: string; existingLeadId?: string }[] = [];
+        let rowNo = 0;
+        const rowName = (l: any) => `${l?.firstName || ''} ${l?.lastName || ''}`.trim();
 
         // Pre-fetch users for email resolution
         const orgUsers = await prisma.user.findMany({
@@ -1299,6 +1304,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
         const DuplicateLeadService = (await import('../services/duplicateLeadService')).default;
 
         for (const l of leadsData) {
+            rowNo++;
             try {
                 // Sanitize phone: keep all digits for the service to handle normalization
                 let cleanPhone = l.phone?.toString().replace(/\D/g, '') || '';
@@ -1336,6 +1342,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                 // Blocked numbers are dropped silently - not a lead, not a re-enquiry.
                 if (await ContactLinkService.isBlocked(orgId, cleanPhone)) {
                     blockedCount++;
+                    notCreated.push({ row: rowNo, name: rowName(l), phone: cleanPhone, outcome: 'blocked', reason: 'Number is on the blocked list' });
                     continue;
                 }
 
@@ -1361,6 +1368,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                         // Resume mode: this row already exists in the CRM - leave it
                         // completely untouched (no re-enquiry log, no owner/branch move).
                         duplicateCount++;
+                        notCreated.push({ row: rowNo, name: rowName(l), phone: cleanPhone, outcome: 'duplicate_skipped', reason: 'Already exists in the CRM (resume/skip-duplicates mode): left untouched', existingLeadId: existingLead.id });
                         continue;
                     }
 
@@ -1407,6 +1415,7 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                         orgId
                     );
                     reEnquiryCount++;
+                    notCreated.push({ row: rowNo, name: rowName(l), phone: cleanPhone, outcome: 're_enquiry', reason: 'Already exists in the CRM: logged as a re-enquiry on the existing lead', existingLeadId: existingLead.id });
                     continue;
                 }
 
@@ -1537,8 +1546,56 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
                 createdCount++;
             } catch (error: any) {
                 console.error('[createBulkLeads] Error creating lead:', error.message, 'Lead data:', l);
-                errors.push({ lead: l, error: (error.message || '').split('\n').filter(Boolean).pop() || 'Unknown error' });
+                const errMsg = (error.message || '').split('\n').filter(Boolean).pop() || 'Unknown error';
+                errors.push({ lead: l, error: errMsg });
+                notCreated.push({ row: rowNo, name: rowName(l), phone: (l?.phone || '').toString(), outcome: 'error', reason: errMsg });
             }
+        }
+
+        // Persist a record of this upload (what came in, what was created, what was not and why) and
+        // an audit entry. Best-effort: logging must never fail the import itself.
+        let importJobId: string | undefined;
+        try {
+            const job = await prisma.importJob.create({
+                data: {
+                    status: errors.length > 0 && createdCount === 0 ? 'failed' : 'completed',
+                    progress: 100,
+                    total: leadsData.length,
+                    successCount: createdCount,
+                    failureCount: errors.length,
+                    errors: notCreated.slice(0, 5000) as any,
+                    metadata: {
+                        kind: 'bulk_batch',
+                        importSessionId: importSessionId || null,
+                        fileName: fileName || null,
+                        totalRowsInFile: totalRowsInFile || null,
+                        created: createdCount,
+                        reEnquiries: reEnquiryCount,
+                        duplicatesSkipped: duplicateCount,
+                        blocked: blockedCount,
+                        errored: errors.length,
+                        resumeMode: skipDuplicatesSilently,
+                        splitUserIds: splitIds,
+                        assignmentRuleId: ruleId || null
+                    } as any,
+                    startedAt: new Date(),
+                    completedAt: new Date(),
+                    createdById: user.id,
+                    organisationId: orgId
+                }
+            });
+            importJobId = job.id;
+            const { logAudit } = await import('../utils/auditLogger');
+            await logAudit({
+                action: 'BULK_LEAD_IMPORT',
+                entity: 'Lead',
+                entityId: job.id,
+                actorId: user.id,
+                organisationId: orgId,
+                details: { fileName: fileName || null, importSessionId: importSessionId || null, rows: leadsData.length, created: createdCount, reEnquiries: reEnquiryCount, duplicatesSkipped: duplicateCount, blocked: blockedCount, errored: errors.length, resumeMode: skipDuplicatesSilently }
+            });
+        } catch (logErr: any) {
+            console.error('[createBulkLeads] Failed to record import job:', logErr.message);
         }
 
         console.log('[createBulkLeads] Results:', { created: createdCount, reEnquiries: reEnquiryCount, duplicates: duplicateCount, errors: errors.length });
@@ -1550,6 +1607,8 @@ export const createBulkLeads = async (req: express.Request, res: express.Respons
             duplicates: duplicateCount,
             blocked: blockedCount,
             errors: errors.length > 0 ? errors : undefined,
+            notCreated: notCreated.filter(n => n.outcome !== 're_enquiry').slice(0, 2000),
+            importJobId,
             nextSplitIndex: splitIndex
         });
     } catch (error) {

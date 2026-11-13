@@ -339,6 +339,15 @@ export const createOpportunity = async (req: Request, res: Response) => {
                 GoalService.updateProgressForUser(opportunity.ownerId!, 'revenue').catch(console.error);
             });
 
+            // Google Ads offline conversion: send the won deal back by GCLID (no-op unless the org connected Google Ads)
+            if (opportunity.leadId && opportunity.amount > 0) {
+                import('../services/googleAdsService').then(({ GoogleAdsService }) =>
+                    GoogleAdsService.uploadWonConversion(opportunity.organisationId, opportunity.leadId as string, {
+                        value: opportunity.amount, orderId: String(oppId)
+                    })
+                ).catch(console.error);
+            }
+
             // Meta Conversion API: Purchase
             if (req.body.amount && opportunity.amount > 0) {
                 import('../services/metaConversionService').then(({ MetaConversionService }) => {
@@ -690,6 +699,15 @@ export const updateOpportunity = async (req: Request, res: Response) => {
             import('../services/goalService').then(({ GoalService }) => {
                 GoalService.updateProgressForUser(opportunity.ownerId!, 'revenue').catch(console.error);
             });
+
+            // Google Ads offline conversion: send the won deal back by GCLID (no-op unless the org connected Google Ads)
+            if (opportunity.leadId && opportunity.amount > 0) {
+                import('../services/googleAdsService').then(({ GoogleAdsService }) =>
+                    GoogleAdsService.uploadWonConversion(opportunity.organisationId, opportunity.leadId as string, {
+                        value: opportunity.amount, orderId: String(oppId)
+                    })
+                ).catch(console.error);
+            }
 
             // Meta Conversion API: Purchase
             if (req.body.amount && opportunity.amount > 0) {

@@ -117,7 +117,7 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           actorId: userId,
           action: 'BULK_LEAD_ASSIGN',
           entity: 'Lead',
-          details: { count: leadIds.length, assignedToId: data.assignedToId }
+          details: { count: result.count, requested: leadIds.length, assignedToId: data.assignedToId, leadIds: leadIds.slice(0, 1000) }
         });
 
         // Notify the new owner - this endpoint previously updated ownership
@@ -146,6 +146,13 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           return ResponseHandler.validationError(res, 'status is required for update-status action');
         }
 
+        // Snapshot BEFORE the update so each lead's timeline records what it changed from
+        // (this bulk path used to write no LeadHistory, so the change was invisible per lead).
+        const leadsBeforeStatus = await prisma.lead.findMany({
+          where: { id: { in: leadIds }, organisationId, isDeleted: false },
+          select: { id: true, status: true }
+        });
+
         result = await prisma.lead.updateMany({
           where: {
             id: { in: leadIds },
@@ -158,12 +165,28 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           }
         });
 
+        const statusChanged = leadsBeforeStatus.filter(l => l.status !== data.status);
+        if (statusChanged.length > 0) {
+          await prisma.leadHistory.createMany({
+            data: statusChanged.map(l => ({
+              leadId: l.id,
+              fieldName: 'status',
+              oldValue: l.status,
+              newValue: data.status,
+              changedById: userId,
+              reason: 'Bulk status update'
+            }))
+          }).catch((err: unknown) => logger.error('Failed to write bulk status history', err, 'BULK_LEADS', userId, organisationId));
+        }
+
+        const fromCounts: Record<string, number> = {};
+        leadsBeforeStatus.forEach(l => { const k = l.status || '(none)'; fromCounts[k] = (fromCounts[k] || 0) + 1; });
         await logAudit({
           organisationId,
           actorId: userId,
           action: 'BULK_LEAD_UPDATE_STATUS',
           entity: 'Lead',
-          details: { count: leadIds.length, status: data.status }
+          details: { count: result.count, requested: leadIds.length, status: data.status, previousStatuses: fromCounts, leadIds: leadIds.slice(0, 1000) }
         });
 
         message = `${result.count} leads status updated successfully`;
@@ -278,6 +301,13 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           return ResponseHandler.forbidden(res, 'Only Org Admins and Managers can perform bulk deletion');
         }
 
+        // Record exactly which leads were removed (id, name, phone, owner) so a deletion can
+        // always be traced and restored - the audit entry used to hold only a count.
+        const leadsToDelete = await prisma.lead.findMany({
+          where: { id: { in: leadIds }, organisationId, isDeleted: false },
+          select: { id: true, firstName: true, lastName: true, phone: true, status: true, assignedToId: true }
+        });
+
         result = await prisma.lead.updateMany({
           where: {
             id: { in: leadIds },
@@ -315,7 +345,11 @@ export const bulkLeadOperations = async (req: Request, res: Response) => {
           actorId: userId,
           action: 'BULK_LEAD_DELETE',
           entity: 'Lead',
-          details: { count: leadIds.length }
+          details: {
+            count: result.count,
+            requested: leadIds.length,
+            leads: leadsToDelete.slice(0, 1000).map(l => ({ id: l.id, name: `${l.firstName} ${l.lastName || ''}`.trim(), phone: l.phone, status: l.status, ownerId: l.assignedToId }))
+          }
         });
 
         message = `${result.count} leads deleted successfully`;

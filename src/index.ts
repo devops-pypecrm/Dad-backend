@@ -425,6 +425,10 @@ app.use('/api/training', trainingRoutes);
 app.use('/api/teams', teamRoutes);
 app.use('/api/ads', adRoutes);
 
+// Google Ads (OAuth, lead form webhook, reporting, offline conversions)
+import googleAdsRoutes from './routes/googleAdsRoutes';
+app.use('/api/google-ads', googleAdsRoutes);
+
 // Meta OAuth
 import metaAuthRoutes from './routes/metaAuthRoutes';
 app.use('/api/meta', metaAuthRoutes);

@@ -72,3 +72,30 @@ export const getImportJobStatus = async (req: Request, res: Response) => {
         res.status(500).json({ message: (error as Error).message });
     }
 };
+
+/**
+ * GET /api/import/jobs - recent bulk-import uploads for the org (admins/managers), newest first.
+ * Each row is one batch request; batches of one file share metadata.importSessionId.
+ */
+export const listImportJobs = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const orgId = getOrgId(user);
+        if (!orgId) return res.status(400).json({ message: 'No org' });
+        const { isOrgAdmin, isManager } = await import('../utils/roleUtils');
+        if (!isOrgAdmin(user) && !isManager(user)) return res.status(403).json({ message: 'Only admins and managers can view import history' });
+
+        const jobs = await prisma.importJob.findMany({
+            where: { organisationId: orgId },
+            orderBy: { createdAt: 'desc' },
+            take: 300,
+            select: {
+                id: true, status: true, total: true, successCount: true, failureCount: true, metadata: true,
+                createdAt: true, createdBy: { select: { firstName: true, lastName: true, email: true } }
+            }
+        });
+        res.json({ jobs });
+    } catch (error: any) {
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
