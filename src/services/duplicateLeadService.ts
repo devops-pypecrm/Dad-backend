@@ -45,6 +45,16 @@ export const DuplicateLeadService = {
         newPhoneCountryCode?: string | null
     ): Promise<DuplicateCheckResult> {
         try {
+            // Per-org switch: when enabled, a repeat enquiry is always a brand-new lead.
+            // Every intake path funnels through here, so this one check covers them all.
+            const orgFlag = await prisma.organisation.findUnique({
+                where: { id: organisationId },
+                select: { allowDuplicateLeads: true }
+            });
+            if (orgFlag?.allowDuplicateLeads) {
+                return { isDuplicate: false };
+            }
+
             // Sanitize phone
             const cleanPhone = phone.toString().replace(/\D/g, '');
 

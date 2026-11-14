@@ -31,6 +31,7 @@ model Organisation {
   incentiveConfig         Json? // { enabled, calculationType, value, minimumDealAmount, defaultStatus }
   dailyReportTime         String                   @default("09:00") // Time to send daily business report (HH:mm)
   dailyReportEmailEnabled Boolean                  @default(false)
+  allowDuplicateLeads     Boolean                  @default(false) // when true, the same phone/email enquiring again creates a NEW lead instead of a re-enquiry
   // Outstanding balance owed, computed from the org's active License.customPrice
   // x current user count x months elapsed since billingStartDate. No invoice/
   // ledger table exists yet - this is a running total, recomputed and
@@ -430,7 +431,10 @@ model Lead {
   branchId               String?
   branch                 Branch?           @relation(fields: [branchId], references: [id])
 
-  @@unique([phone, organisationId, branchId])
+  // Was @@unique([phone, organisationId, branchId]); relaxed so orgs with allowDuplicateLeads can hold
+  // repeat enquiries as separate leads. Duplicate prevention for all other orgs is enforced in
+  // DuplicateLeadService.checkDuplicate.
+  @@index([phone, organisationId, branchId])
   @@index([organisationId])
   @@index([assignedToId])
   @@index([status])
