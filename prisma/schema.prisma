@@ -142,6 +142,9 @@ model User {
   resetPasswordToken             String?
   resetPasswordExpire            DateTime?
   tokenVersion                   Int                      @default(0)
+  // Multi-organisation: users sharing the same accountGroupId are the SAME person with one separate
+  // admin user row per organisation (see multiOrgService). Null for everyone else = no behaviour change.
+  accountGroupId                 String?
   workingHours                   Json?
   timezone                       String                   @default("Asia/Kolkata")
   createdAt                      DateTime                 @default(now())
@@ -242,6 +245,7 @@ model User {
   @@index([role])
   @@index([teamId])
   @@index([branchId])
+  @@index([accountGroupId])
 }
 
 model Team {

@@ -427,7 +427,9 @@ app.use('/api/ads', adRoutes);
 
 // Google Ads (OAuth, lead form webhook, reporting, offline conversions)
 import googleAdsRoutes from './routes/googleAdsRoutes';
+import multiOrgRoutes from './routes/multiOrgRoutes';
 app.use('/api/google-ads', googleAdsRoutes);
+app.use('/api/multi-org', multiOrgRoutes);
 
 // Meta OAuth
 import metaAuthRoutes from './routes/metaAuthRoutes';
