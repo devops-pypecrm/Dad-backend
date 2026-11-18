@@ -274,6 +274,69 @@ export const getTimeline = async (req: Request, res: Response) => {
             }
         }
 
+        // Payments: down payments / installment payments and EMI plans recorded against the deal(s).
+        // A lead's timeline includes those of the opportunities converted from it.
+        if (type === 'lead' || type === 'opportunity') {
+            try {
+                const orgScope = (req as any).user?.organisationId;
+                const orgCurrency = String((req as any).user?.organisation?.currency || 'INR').toUpperCase();
+                const fmtMoney = (n: number) => {
+                    try {
+                        return new Intl.NumberFormat(orgCurrency === 'INR' ? 'en-IN' : 'en-US', { style: 'currency', currency: orgCurrency, maximumFractionDigits: 2 }).format(n);
+                    } catch { return String(Math.round(n * 100) / 100); }
+                };
+                const opps = await prisma.opportunity.findMany({
+                    where: { ...(type === 'lead' ? { leadId: id } : { id }), ...(orgScope ? { organisationId: orgScope } : {}) },
+                    select: { id: true, name: true }
+                });
+                if (opps.length > 0) {
+                    const oppName = new Map(opps.map(o => [o.id, o.name]));
+                    const oppIds = opps.map(o => o.id);
+                    const [payments, schedules] = await Promise.all([
+                        prisma.paymentRecord.findMany({
+                            where: { opportunityId: { in: oppIds } },
+                            include: { createdBy: { select: { firstName: true, lastName: true } }, installment: { select: { installmentNumber: true } } }
+                        }),
+                        prisma.eMISchedule.findMany({
+                            where: { opportunityId: { in: oppIds } },
+                            include: { installments: { select: { id: true } } }
+                        })
+                    ]);
+                    for (const pay of payments) {
+                        const label = pay.installment
+                            ? `Installment #${pay.installment.installmentNumber} paid`
+                            : pay.paymentType === 'partial' ? 'Down payment received'
+                            : pay.paymentType === 'full' ? 'Full payment received'
+                            : 'Payment received';
+                        timeline.push({
+                            id: `payment-${pay.id}`,
+                            type: 'audit',
+                            subType: 'PAYMENT_RECEIVED',
+                            title: label,
+                            description: `${fmtMoney(pay.amount)} received on "${oppName.get(pay.opportunityId) || 'deal'}"${pay.notes ? ` — ${pay.notes}` : ''}`,
+                            date: pay.paymentDate || pay.createdAt,
+                            actor: pay.createdBy || undefined,
+                            meta: {}
+                        } as any);
+                    }
+                    for (const sch of schedules) {
+                        timeline.push({
+                            id: `emi-${sch.id}`,
+                            type: 'audit',
+                            subType: 'EMI_CREATED',
+                            title: 'EMI plan created',
+                            description: `${sch.installments.length} installment(s) totalling ${fmtMoney(sch.totalAmount)} on "${oppName.get(sch.opportunityId) || 'deal'}"`,
+                            date: sch.createdAt,
+                            actor: undefined,
+                            meta: {}
+                        } as any);
+                    }
+                }
+            } catch (payErr) {
+                console.error('Timeline payments error:', payErr); // never break the timeline over this
+            }
+        }
+
         // Sort by date descending
         timeline.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
