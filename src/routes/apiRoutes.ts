@@ -88,15 +88,21 @@ router.post('/leads', verifyApiKey, async (req, res) => {
             const lowerSource = source.toLowerCase();
             const validSources = Object.values(LeadSource) as string[];
             
-            if (validSources.includes(lowerSource)) {
+            // "api" is only the generic label website plugins/forms put in their payload (the
+            // Edumentora site sends source:"api"). This endpoint IS the Website API, so those
+            // leads belong under "website" - the original text stays in sourceDetails.originalSource.
+            if (lowerSource === 'api') {
+                resolvedSource = LeadSource.website;
+                console.log(`[LeadAPI][${REQUEST_ID}] Step 4: Generic "api" label mapped to website.`);
+            } else if (validSources.includes(lowerSource)) {
                 resolvedSource = lowerSource as LeadSource;
                 console.log(`[LeadAPI][${REQUEST_ID}] Step 4: Matched source: ${resolvedSource}`);
             } else if (lowerSource.includes('web') || lowerSource.includes('form')) {
                 resolvedSource = LeadSource.website;
                 console.log(`[LeadAPI][${REQUEST_ID}] Step 4: Mapped "${source}" to website`);
             } else {
-                resolvedSource = LeadSource.api;
-                console.log(`[LeadAPI][${REQUEST_ID}] Step 4: Label "${source}" mapped to api enum.`);
+                resolvedSource = LeadSource.website;
+                console.log(`[LeadAPI][${REQUEST_ID}] Step 4: Label "${source}" mapped to website.`);
             }
         }
 
