@@ -45,16 +45,6 @@ export const DuplicateLeadService = {
         newPhoneCountryCode?: string | null
     ): Promise<DuplicateCheckResult> {
         try {
-            // Per-org switch: when enabled, a repeat enquiry is always a brand-new lead.
-            // Every intake path funnels through here, so this one check covers them all.
-            const orgFlag = await prisma.organisation.findUnique({
-                where: { id: organisationId },
-                select: { allowDuplicateLeads: true }
-            });
-            if (orgFlag?.allowDuplicateLeads) {
-                return { isDuplicate: false };
-            }
-
             // Sanitize phone
             const cleanPhone = phone.toString().replace(/\D/g, '');
 
@@ -231,9 +221,23 @@ export const DuplicateLeadService = {
             // not status) even when status is left untouched.
             const currentStatus = existingLead.status ? existingLead.status.toLowerCase() : null;
             const noProgressYet = !currentStatus || ['new', 're_enquiry'].includes(currentStatus);
-            const newStatus = noProgressYet
-                ? (newData.stage ? newData.stage.toLowerCase() : 're_enquiry')
-                : existingLead.status;
+
+            // Per-org switch (Organisation.allowDuplicateLeads, "Reopen as New on repeat enquiry"):
+            // when on, a repeat enquiry always resets the SAME lead's status to 'new' - even if a
+            // rep had already progressed it (or it was won/lost) - so it surfaces as fresh work for
+            // the existing owner. It is still one lead (no duplicate is created), tagged as a
+            // re-enquiry. Off (default) keeps the original behaviour below.
+            const orgFlag = await prisma.organisation.findUnique({
+                where: { id: organisationId },
+                select: { allowDuplicateLeads: true }
+            });
+            const resetToNew = !!orgFlag?.allowDuplicateLeads;
+
+            const newStatus = resetToNew
+                ? 'new'
+                : noProgressYet
+                    ? (newData.stage ? newData.stage.toLowerCase() : 're_enquiry')
+                    : existingLead.status;
 
             // Only actually move branch/owner when the caller asked to AND it's a
             // genuine change — an explicit newBranchId equal to the current one (or a

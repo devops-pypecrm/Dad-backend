@@ -2,7 +2,6 @@
 // import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/client';
 import { registerMoneyMiddleware } from '../utils/moneyConversion';
-import { registerRepeatEnquiryMiddleware } from '../utils/repeatEnquiryMiddleware';
 import { setCurrencyDb } from '../services/currencyService';
 
 const globalForPrisma = global as unknown as {
@@ -14,7 +13,6 @@ const globalForPrisma = global as unknown as {
 if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = new PrismaClient();
     registerMoneyMiddleware(globalForPrisma.prisma); // money stored in USD, shown in the org's currency
-    registerRepeatEnquiryMiddleware(globalForPrisma.prisma); // allowDuplicateLeads orgs: link repeat enquiries to the earlier lead
     setCurrencyDb(globalForPrisma.prisma);
 }
 
