@@ -71,33 +71,62 @@ export const globalSearch = async (req: Request, res: Response) => {
       ? { branchId: currentUser.branchId }
       : {};
 
-    // Search Leads - filtered by hierarchy and branch
+    // Search Leads - uses the SAME visibility and matching rules as the Leads list page,
+    // otherwise a lead you can open in the list can be missing here (admins/operation
+    // executives see every lead; others also see leads they created or unassigned ones).
+    const { getLeadVisibilityFilter } = await import('../utils/hierarchyUtils');
+    const leadVisibility = await getLeadVisibilityFilter(user, false);
+    const searchNoSpace = searchTerm.replace(/\s+/g, '');
+    const searchDigits = searchTerm.replace(/\D/g, '');
+    // phone is stored WITHOUT the country code, so also try the number with 1-3 leading digits peeled off
+    const phoneCandidates = Array.from(new Set(
+      [searchTerm, searchNoSpace, searchDigits,
+        ...(searchDigits.length > 6 ? [1, 2, 3].map(n => searchDigits.slice(n)) : [])]
+        .filter(t => t.length >= 4)
+    ));
+    const nameParts = searchTerm.split(/\s+/).filter(Boolean);
+    const leadSearchOr: any[] = [
+      { firstName: { contains: searchTerm, mode: 'insensitive' } },
+      { firstName: { contains: searchNoSpace, mode: 'insensitive' } },
+      { lastName: { contains: searchTerm, mode: 'insensitive' } },
+      { lastName: { contains: searchNoSpace, mode: 'insensitive' } },
+      { email: { contains: searchTerm, mode: 'insensitive' } },
+      { company: { contains: searchTerm, mode: 'insensitive' } },
+      ...phoneCandidates.flatMap(c => ([
+        { phone: { contains: c, mode: 'insensitive' as const } },
+        { secondaryPhone: { contains: c, mode: 'insensitive' as const } }
+      ]))
+    ];
+    // "Rahul Kumar" - first and last name live in separate columns
+    if (nameParts.length >= 2) {
+      leadSearchOr.push({
+        AND: [
+          { firstName: { contains: nameParts[0], mode: 'insensitive' } },
+          { lastName: { contains: nameParts.slice(1).join(' '), mode: 'insensitive' } }
+        ]
+      });
+    }
     const leads = await prisma.lead.findMany({
       where: {
-        organisationId,
-        isDeleted: false,
-        assignedToId: { in: visibleUserIds }, // Only show leads assigned to visible users
-        ...branchFilter, // Add branch filter
-        OR: [
-          { firstName: { contains: searchTerm, mode: 'insensitive' } },
-          { lastName: { contains: searchTerm, mode: 'insensitive' } },
-          { email: { contains: searchTerm, mode: 'insensitive' } },
-          { company: { contains: searchTerm, mode: 'insensitive' } },
-          { phone: { contains: searchTerm, mode: 'insensitive' } }
+        AND: [
+          { organisationId, isDeleted: false },
+          leadVisibility,
+          { OR: leadSearchOr }
         ]
       },
       include: {
         assignedTo: { select: { firstName: true, lastName: true } }
       },
-      take: Math.ceil(limit * 0.4) // 40% of results for leads
+      orderBy: { createdAt: 'desc' },
+      take: limit // leads are the main use of search; the final list is trimmed to `limit` below
     });
 
     leads.forEach(lead => {
       results.push({
         id: lead.id,
         type: 'lead',
-        title: `${lead.firstName} ${lead.lastName}`,
-        subtitle: lead.company || lead.email || 'No company',
+        title: `${lead.firstName} ${lead.lastName}`.trim(),
+        subtitle: lead.phone || lead.company || lead.email || 'No company',
         description: `${lead.status} • Score: ${lead.leadScore}`,
         status: lead.status,
         assignedTo: lead.assignedTo ? `${lead.assignedTo.firstName} ${lead.assignedTo.lastName}` : undefined,
