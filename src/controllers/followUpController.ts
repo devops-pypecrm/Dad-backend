@@ -433,3 +433,65 @@ export const updateFollowUp = async (req: Request, res: Response) => {
         res.status(500).json({ message: (error as Error).message });
     }
 };
+
+// PUT /api/follow-ups/bulk-status - admin only: set the status of many follow-ups at once
+export const bulkUpdateFollowUpStatus = async (req: Request, res: Response) => {
+    try {
+        const user = (req as any).user;
+        const isAdmin = user.role === 'admin' || user.role === 'super_admin';
+        if (!isAdmin) {
+            return res.status(403).json({ message: 'Only admins can bulk update follow-ups' });
+        }
+
+        const { ids, status } = req.body as { ids?: string[]; status?: string };
+        const allowed = ['not_started', 'in_progress', 'completed', 'deferred'];
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ message: 'ids is required' });
+        }
+        if (!status || !allowed.includes(status)) {
+            return res.status(400).json({ message: 'Invalid status' });
+        }
+        if (ids.length > 5000) {
+            return res.status(400).json({ message: 'Too many follow-ups selected (max 5000)' });
+        }
+
+        const orgId = getOrgId(user);
+        const orgScope = user.role === 'super_admin' && !orgId ? {} : { organisationId: orgId };
+
+        // Only touch rows in the caller's organisation; remember the leads so their next-follow-up date is re-synced
+        const targets = await prisma.followUp.findMany({
+            where: { id: { in: ids }, ...orgScope },
+            select: { id: true, leadId: true }
+        });
+        const targetIds = targets.map(t => t.id);
+
+        const result = await prisma.followUp.updateMany({
+            where: { id: { in: targetIds } },
+            data: { status: status as any }
+        });
+
+        const leadIds = Array.from(new Set(targets.map(t => t.leadId).filter(Boolean) as string[]));
+        for (const leadId of leadIds) {
+            await FollowUpService.syncLeadFollowUp(leadId).catch(err =>
+                console.error('[bulkUpdateFollowUpStatus] syncLeadFollowUp failed:', leadId, err));
+        }
+
+        if (orgId) {
+            emitToOrg(orgId, 'followup_updated', { bulk: true, count: result.count });
+        }
+
+        await logAudit({
+            action: 'FOLLOWUP_BULK_STATUS',
+            entity: 'FollowUp',
+            entityId: 'bulk',
+            actorId: user.id,
+            organisationId: orgId || '',
+            details: { status, count: result.count, ids: targetIds.slice(0, 200) }
+        });
+
+        res.json({ updated: result.count, skipped: ids.length - result.count });
+    } catch (error) {
+        console.error('[bulkUpdateFollowUpStatus] Error:', error);
+        res.status(500).json({ message: (error as Error).message });
+    }
+};
